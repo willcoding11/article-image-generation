@@ -3,12 +3,16 @@
 
 import { useEffect, useState } from "react";
 import {
-  type Design,
-  DESIGNS,
-  DESIGN_LABELS,
+  type Geometry,
+  type Effect,
+  GEOMETRIES,
+  EFFECTS,
+  GEOMETRY_LABELS,
+  EFFECT_LABELS,
   FG_SWATCHES,
   BG_SWATCHES,
-  makeSwatches,
+  makeGeometrySwatches,
+  makeEffectSwatches,
   makeBasePreview,
   generateSamples,
   watermarkDataUrl,
@@ -18,10 +22,97 @@ const MONO = 'ui-monospace, "SF Mono", Menlo, monospace';
 const SANS = "Helvetica, Arial, sans-serif";
 const SERIF = "var(--font-newsreader), serif";
 
+const sectionLabelStyle: React.CSSProperties = {
+  font: `600 11px/1 ${SANS}`,
+  letterSpacing: "0.16em",
+  textTransform: "uppercase",
+  color: "#9a968d",
+  marginBottom: 11,
+};
+
 type HistoryItem = { url: string; label: string };
 
+// Reusable 64px thumbnail picker (used for both Geometry and Effect).
+function ThumbPicker({
+  title,
+  items,
+  swatches,
+  selectedKey,
+  onSelect,
+}: {
+  title: string;
+  items: { key: string; label: string }[];
+  swatches: Record<string, string> | null;
+  selectedKey: string;
+  onSelect: (key: string) => void;
+}) {
+  return (
+    <div>
+      <div style={sectionLabelStyle}>{title}</div>
+      <div style={{ display: "flex", gap: 10 }}>
+        {items.map(({ key, label }) => {
+          const selected = key === selectedKey;
+          const preview = swatches?.[key];
+          return (
+            <button
+              key={key}
+              onClick={() => onSelect(key)}
+              title={label}
+              style={{
+                position: "relative",
+                width: 64,
+                height: 64,
+                padding: 0,
+                margin: 0,
+                border: "1px solid #ece9e2",
+                background: "#fff",
+                cursor: "pointer",
+                overflow: "hidden",
+                display: "block",
+              }}
+            >
+              {preview && (
+                <img
+                  src={preview}
+                  alt=""
+                  style={{ width: "100%", height: "100%", display: "block", objectFit: "cover" }}
+                />
+              )}
+              <span
+                style={{
+                  position: "absolute",
+                  left: 6,
+                  bottom: 5,
+                  font: `600 8px/1 ${SANS}`,
+                  letterSpacing: "0.1em",
+                  textTransform: "uppercase",
+                  color: "#fff",
+                  mixBlendMode: "difference",
+                }}
+              >
+                {label}
+              </span>
+              {selected && (
+                <span
+                  style={{
+                    position: "absolute",
+                    inset: 0,
+                    border: "2px solid #161512",
+                    pointerEvents: "none",
+                  }}
+                />
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export default function Studio({ variations = 3 }: { variations?: number }) {
-  const [design, setDesign] = useState<Design>("weave");
+  const [geometry, setGeometry] = useState<Geometry>("wave");
+  const [effect, setEffect] = useState<Effect>("glow");
   const [fg, setFg] = useState("#d23b34");
   const [bg, setBg] = useState("#f4f1ea");
   const [feeling, setFeeling] = useState("");
@@ -30,24 +121,27 @@ export default function Studio({ variations = 3 }: { variations?: number }) {
   const [featuredUrl, setFeaturedUrl] = useState<string | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [generating, setGenerating] = useState(false);
-  const [swatches, setSwatches] = useState<Record<Design, string> | null>(null);
+  const [geomSwatches, setGeomSwatches] = useState<Record<Geometry, string> | null>(null);
+  const [effectSwatches, setEffectSwatches] = useState<Record<Effect, string> | null>(null);
   const [basePreview, setBasePreview] = useState<string | null>(null);
 
-  // Live design thumbnails reflect the current foreground/background colors.
+  // Thumbnails reflect the current foreground/background colors.
   useEffect(() => {
-    setSwatches(makeSwatches(fg, bg));
+    setGeomSwatches(makeGeometrySwatches(fg, bg));
+    setEffectSwatches(makeEffectSwatches(fg, bg));
   }, [fg, bg]);
 
-  // The base preview reflects the selected design + colors (no watermark).
+  // The base preview reflects the selected geometry + effect + colors.
   useEffect(() => {
-    setBasePreview(makeBasePreview(design, fg, bg));
-  }, [design, fg, bg]);
+    setBasePreview(makeBasePreview(geometry, effect, fg, bg));
+  }, [geometry, effect, fg, bg]);
 
   const n = Math.max(2, Math.min(4, variations || 3));
 
   function commit(batch: string[]) {
     const label =
-      (heading.trim() || feeling.trim() || "Untitled") + " · " + design;
+      (heading.trim() || feeling.trim() || "Untitled") +
+      ` · ${GEOMETRY_LABELS[geometry]} · ${EFFECT_LABELS[effect]}`;
     const hist: HistoryItem[] = batch.map((url) => ({ url, label }));
     setSamples(batch);
     setFeaturedUrl(batch[0] ?? null);
@@ -68,7 +162,8 @@ export default function Studio({ variations = 3 }: { variations?: number }) {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            design,
+            geometry,
+            effect,
             fg,
             bg,
             feeling,
@@ -95,10 +190,10 @@ export default function Studio({ variations = 3 }: { variations?: number }) {
       }
       // No model output — procedural fallback. Keep the shimmer visible briefly.
       await new Promise((r) => setTimeout(r, 680));
-      commit(generateSamples(design, fg, bg, feeling, heading, n, nonce));
+      commit(generateSamples(geometry, effect, fg, bg, feeling, heading, n, nonce));
     } catch {
       await new Promise((r) => setTimeout(r, 680));
-      commit(generateSamples(design, fg, bg, feeling, heading, n, nonce));
+      commit(generateSamples(geometry, effect, fg, bg, feeling, heading, n, nonce));
     }
   }
 
@@ -116,22 +211,15 @@ export default function Studio({ variations = 3 }: { variations?: number }) {
   // ----- derived -----
   const hasSamples = samples.length > 0;
   const featuredImg = hasSamples ? featuredUrl || samples[0] : basePreview;
-  const designLabel = DESIGN_LABELS[design];
+  const geomLabel = GEOMETRY_LABELS[geometry];
+  const effectLabel = EFFECT_LABELS[effect];
   const featuredCaption = hasSamples
-    ? `${designLabel} · MAI-Image-2.5`
-    : `Base preview · ${designLabel}`;
+    ? `${geomLabel} · ${effectLabel} · MAI-Image-2.5`
+    : `Base preview · ${geomLabel} · ${effectLabel}`;
   const showSamples = hasSamples && !generating;
   const hasFeeling = feeling.trim().length > 0;
   const hasHeading = heading.trim().length > 0;
   const historyCount = String(history.length).padStart(2, "0") + " saved";
-
-  const sectionLabel: React.CSSProperties = {
-    font: `600 11px/1 ${SANS}`,
-    letterSpacing: "0.16em",
-    textTransform: "uppercase",
-    color: "#9a968d",
-    marginBottom: 11,
-  };
 
   return (
     <div
@@ -190,71 +278,27 @@ export default function Studio({ variations = 3 }: { variations?: number }) {
         }}
       >
         <div style={{ display: "flex", gap: 52, flexWrap: "wrap", alignItems: "flex-start" }}>
-          {/* 01 — Design */}
-          <div>
-            <div style={sectionLabel}>01 — Design</div>
-            <div style={{ display: "flex", gap: 10 }}>
-              {DESIGNS.map(({ key, label }) => {
-                const selected = key === design;
-                const preview = swatches?.[key];
-                return (
-                  <button
-                    key={key}
-                    onClick={() => setDesign(key)}
-                    title={label}
-                    style={{
-                      position: "relative",
-                      width: 64,
-                      height: 64,
-                      padding: 0,
-                      margin: 0,
-                      border: "1px solid #ece9e2",
-                      background: "#fff",
-                      cursor: "pointer",
-                      overflow: "hidden",
-                      display: "block",
-                    }}
-                  >
-                    {preview && (
-                      <img
-                        src={preview}
-                        alt=""
-                        style={{ width: "100%", height: "100%", display: "block", objectFit: "cover" }}
-                      />
-                    )}
-                    <span
-                      style={{
-                        position: "absolute",
-                        left: 6,
-                        bottom: 5,
-                        font: `600 8px/1 ${SANS}`,
-                        letterSpacing: "0.1em",
-                        textTransform: "uppercase",
-                        color: "#fff",
-                        mixBlendMode: "difference",
-                      }}
-                    >
-                      {label}
-                    </span>
-                    {selected && (
-                      <span
-                        style={{
-                          position: "absolute",
-                          inset: 0,
-                          border: "2px solid #161512",
-                          pointerEvents: "none",
-                        }}
-                      />
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
+          {/* 01 — Geometry */}
+          <ThumbPicker
+            title="01 — Geometry"
+            items={GEOMETRIES}
+            swatches={geomSwatches}
+            selectedKey={geometry}
+            onSelect={(k) => setGeometry(k as Geometry)}
+          />
 
-          {/* 02 — Foreground */}
+          {/* 02 — Effect */}
+          <ThumbPicker
+            title="02 — Effect"
+            items={EFFECTS}
+            swatches={effectSwatches}
+            selectedKey={effect}
+            onSelect={(k) => setEffect(k as Effect)}
+          />
+
+          {/* 03 — Foreground */}
           <div>
-            <div style={sectionLabel}>02 — Foreground</div>
+            <div style={sectionLabelStyle}>03 — Foreground</div>
             <div style={{ display: "flex", gap: 9, flexWrap: "wrap", maxWidth: 340 }}>
               {FG_SWATCHES.map((c) => (
                 <button
@@ -288,9 +332,9 @@ export default function Studio({ variations = 3 }: { variations?: number }) {
             </div>
           </div>
 
-          {/* 03 — Background */}
+          {/* 04 — Background */}
           <div>
-            <div style={sectionLabel}>03 — Background</div>
+            <div style={sectionLabelStyle}>04 — Background</div>
             <div style={{ display: "flex", gap: 9, flexWrap: "wrap", maxWidth: 340 }}>
               {BG_SWATCHES.map((c) => (
                 <button

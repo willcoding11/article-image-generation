@@ -1,32 +1,49 @@
 // MAI·Image Studio — procedural canvas generators.
 //
-// Ported faithfully from the design prototype. These run client-side only
-// (they need a real <canvas>). They serve two roles:
-//   1. Design thumbnails + the live "base preview" (always procedural).
-//   2. A fallback for the Generate action when the real MAI-Image-2.5 model
-//      is not configured — see components/Studio.tsx.
-//
-// When the real model is wired in (app/api/generate/route.ts), keep using
-// drawStamp / watermarkDataUrl so generated images carry the same
-// bottom-left MAI-Image-2.5 stamp.
+// Compositions are built progressively:  GEOMETRY (a base shape/pattern)
+// → EFFECT (a loose treatment applied on top) → COLOR.  These run client-side
+// only (they need a real <canvas>) and drive the thumbnails, the live base
+// preview, and the procedural fallback. The real output comes from
+// MAI-Image-2.5 (app/api/generate/route.ts), which is prompted in the same
+// geometry → effect → color order.
 
-export type Design = "weave" | "chevron" | "ascii" | "ripple" | "lines";
+export type Geometry = "radial" | "ripple" | "lines" | "string" | "wave";
+export type Effect = "glow" | "ascii" | "dataviz" | "repeat" | "minimal";
 
-export const DESIGNS: { key: Design; label: string }[] = [
-  { key: "weave", label: "Weave" },
-  { key: "chevron", label: "Chevron" },
-  { key: "ascii", label: "ASCII" },
+export const GEOMETRIES: { key: Geometry; label: string }[] = [
+  { key: "radial", label: "Radial" },
   { key: "ripple", label: "Ripple" },
   { key: "lines", label: "Lines" },
+  { key: "string", label: "String" },
+  { key: "wave", label: "Wave" },
 ];
 
-export const DESIGN_LABELS: Record<Design, string> = {
-  weave: "Weave",
-  chevron: "Chevron",
-  ascii: "ASCII",
+export const EFFECTS: { key: Effect; label: string }[] = [
+  { key: "glow", label: "Glow" },
+  { key: "ascii", label: "ASCII" },
+  { key: "dataviz", label: "Data" },
+  { key: "repeat", label: "Repeat" },
+  { key: "minimal", label: "Minimal" },
+];
+
+export const GEOMETRY_LABELS: Record<Geometry, string> = {
+  radial: "Radial",
   ripple: "Ripple",
   lines: "Lines",
+  string: "String",
+  wave: "Wave",
 };
+
+export const EFFECT_LABELS: Record<Effect, string> = {
+  glow: "Glow",
+  ascii: "ASCII",
+  dataviz: "Data",
+  repeat: "Repeat",
+  minimal: "Minimal",
+};
+
+// Sample geometry used to render the EFFECT thumbnails (shows the treatment).
+const EFFECT_SAMPLE_GEOM: Geometry = "ripple";
 
 export const FG_SWATCHES = [
   { name: "Crimson", color: "#d23b34" },
@@ -63,6 +80,11 @@ function hexToRgb(hex: string): { r: number; g: number; b: number } {
   return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
 }
 
+function rgba(hex: string, a: number): string {
+  const { r, g, b } = hexToRgb(hex);
+  return `rgba(${r},${g},${b},${a})`;
+}
+
 function mulberry32(a: number): () => number {
   return function () {
     a |= 0;
@@ -83,256 +105,72 @@ export function hash(str: string): number {
   return h >>> 0;
 }
 
-/* ---------- generators ---------- */
+/* ---------- geometry (base structure) ---------- */
 
-function drawWeave(
+// Concentric radial contour lines — topographic / radar-like rings.
+function drawRadial(
   ctx: CanvasRenderingContext2D,
   W: number,
   H: number,
   fg: string,
-  bg: string,
   rand: () => number,
 ) {
-  ctx.fillStyle = bg;
-  ctx.fillRect(0, 0, W, H);
-  const { r, g, b } = hexToRgb(fg);
-  const cols = 4 + Math.floor(rand() * 2);
-  const cw = W / cols;
-  const rows = Math.max(1, Math.round(H / cw));
-  const ch = H / rows;
-  ctx.lineWidth = Math.max(0.6, W * 0.0008);
-  for (let j = 0; j < rows; j++) {
-    for (let i = 0; i < cols; i++) {
-      const x0 = i * cw,
-        y0 = j * ch;
-      const corner = (i + j + (rand() > 0.5 ? 2 : 0)) % 4;
-      const C = [
-        [x0, y0],
-        [x0 + cw, y0],
-        [x0 + cw, y0 + ch],
-        [x0, y0 + ch],
-      ];
-      const px = C[corner][0],
-        py = C[corner][1];
-      const a = C[(corner + 1) % 4],
-        o = C[(corner + 2) % 4],
-        bb = C[(corner + 3) % 4];
-      const n = 34;
-      ctx.strokeStyle = "rgba(" + r + "," + g + "," + b + ",0.5)";
-      ctx.beginPath();
-      for (let k = 0; k <= n; k++) {
-        const t = k / n;
-        let tx, ty;
-        if (t < 0.5) {
-          const u = t / 0.5;
-          tx = a[0] + (o[0] - a[0]) * u;
-          ty = a[1] + (o[1] - a[1]) * u;
-        } else {
-          const u = (t - 0.5) / 0.5;
-          tx = o[0] + (bb[0] - o[0]) * u;
-          ty = o[1] + (bb[1] - o[1]) * u;
-        }
-        ctx.moveTo(px, py);
-        ctx.lineTo(tx, ty);
-      }
-      ctx.stroke();
-      const gr = ctx.createRadialGradient(px, py, 0, px, py, cw * 0.5);
-      gr.addColorStop(0, "rgba(" + r + "," + g + "," + b + ",0.55)");
-      gr.addColorStop(1, "rgba(" + r + "," + g + "," + b + ",0)");
-      ctx.fillStyle = gr;
-      ctx.fillRect(x0, y0, cw, ch);
-    }
-  }
-}
-
-function drawChevron(
-  ctx: CanvasRenderingContext2D,
-  W: number,
-  H: number,
-  fg: string,
-  bg: string,
-  rand: () => number,
-) {
-  ctx.fillStyle = bg;
-  ctx.fillRect(0, 0, W, H);
-  const { r, g, b } = hexToRgb(fg);
-  const segs = 5;
-  const cx0 = W * 0.28,
-    cw = W * 0.44;
-  const top = H * 0.08,
-    colH = H * 0.84,
-    bh = colH / segs;
-  ctx.lineWidth = Math.max(0.6, W * 0.0008);
-  const flip = rand() > 0.5 ? 1 : 0;
-  for (let k = 0; k < segs; k++) {
-    const y0 = top + k * bh,
-      y1 = y0 + bh;
-    const leftApex = (k + flip) % 2 === 0;
-    let apex, p1, p2;
-    if (leftApex) {
-      apex = [cx0, (y0 + y1) / 2];
-      p1 = [cx0 + cw, y0];
-      p2 = [cx0 + cw, y1];
-    } else {
-      apex = [cx0 + cw, (y0 + y1) / 2];
-      p1 = [cx0, y0];
-      p2 = [cx0, y1];
-    }
-    const grd = ctx.createLinearGradient(
-      apex[0],
-      apex[1],
-      (p1[0] + p2[0]) / 2,
-      (p1[1] + p2[1]) / 2,
-    );
-    grd.addColorStop(0, "rgba(" + r + "," + g + "," + b + ",0.18)");
-    grd.addColorStop(1, "rgba(" + r + "," + g + "," + b + ",0.02)");
+  const cx = W * (0.4 + rand() * 0.2);
+  const cy = H * (0.4 + rand() * 0.2);
+  const maxR = Math.hypot(Math.max(cx, W - cx), Math.max(cy, H - cy));
+  const rings = 18 + Math.floor(rand() * 16);
+  ctx.lineWidth = Math.max(0.8, W * 0.0013);
+  const wobScale = 0.008 + rand() * 0.02;
+  for (let i = 1; i <= rings; i++) {
+    const t = i / rings;
+    const rad = t * maxR;
+    const k = 2 + (i % 4);
+    const ph = i * 1.3;
     ctx.beginPath();
-    ctx.moveTo(apex[0], apex[1]);
-    ctx.lineTo(p1[0], p1[1]);
-    ctx.lineTo(p2[0], p2[1]);
-    ctx.closePath();
-    ctx.fillStyle = grd;
-    ctx.fill();
-    const n = 46;
-    ctx.strokeStyle = "rgba(" + r + "," + g + "," + b + ",0.55)";
-    ctx.beginPath();
-    for (let m = 0; m <= n; m++) {
-      const t = m / n;
-      const tx = p1[0] + (p2[0] - p1[0]) * t,
-        ty = p1[1] + (p2[1] - p1[1]) * t;
-      ctx.moveTo(apex[0], apex[1]);
-      ctx.lineTo(tx, ty);
+    const seg = 160;
+    for (let s = 0; s <= seg; s++) {
+      const a = (s / seg) * Math.PI * 2;
+      const wob = 1 + Math.sin(a * k + ph) * wobScale * (1 - t * 0.6);
+      const x = cx + Math.cos(a) * rad * wob;
+      const y = cy + Math.sin(a) * rad * wob;
+      if (s === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
     }
+    ctx.strokeStyle = rgba(fg, 0.22 + 0.5 * (1 - t));
     ctx.stroke();
   }
 }
 
-function drawAscii(
-  ctx: CanvasRenderingContext2D,
-  W: number,
-  H: number,
-  fg: string,
-  bg: string,
-  rand: () => number,
-) {
-  ctx.fillStyle = bg;
-  ctx.fillRect(0, 0, W, H);
-  const { r, g, b } = hexToRgb(fg);
-  const ramp = " .:-=+*#%@";
-  const cols = 58,
-    cell = W / cols,
-    rows = Math.ceil(H / cell);
-  const blobs: { x: number; y: number; r: number; w: number }[] = [];
-  const nb = 3 + Math.floor(rand() * 3);
-  for (let i = 0; i < nb; i++)
-    blobs.push({
-      x: rand() * W,
-      y: rand() * H,
-      r: (0.12 + rand() * 0.3) * W,
-      w: 0.6 + rand() * 0.8,
-    });
-  const gx = rand(),
-    gy = rand();
-  ctx.textBaseline = "top";
-  ctx.font = Math.round(cell * 1.05) + 'px ui-monospace, "SF Mono", Menlo, monospace';
-  for (let jy = 0; jy < rows; jy++) {
-    for (let ix = 0; ix < cols; ix++) {
-      const x = ix * cell,
-        y = jy * cell;
-      let v = 0;
-      for (const bl of blobs) {
-        const dx = x - bl.x,
-          dy = y - bl.y;
-        const d = Math.sqrt(dx * dx + dy * dy);
-        v += bl.w * Math.max(0, 1 - d / bl.r);
-      }
-      v += (x / W) * gx * 0.5 + (1 - y / H) * gy * 0.5;
-      v = Math.max(0, Math.min(1, v));
-      const idx = Math.floor(v * (ramp.length - 1));
-      const ch = ramp[idx];
-      if (ch === " ") continue;
-      ctx.fillStyle = "rgba(" + r + "," + g + "," + b + "," + (0.35 + 0.6 * v) + ")";
-      ctx.fillText(ch, x, y);
-    }
-  }
-}
-
+// Concentric right-facing arcs rippling from an off-center point.
 function drawRipple(
   ctx: CanvasRenderingContext2D,
   W: number,
   H: number,
   fg: string,
-  bg: string,
   rand: () => number,
 ) {
-  ctx.fillStyle = bg;
-  ctx.fillRect(0, 0, W, H);
-  const { r, g, b } = hexToRgb(fg);
-  const bands = 4 + Math.floor(rand() * 3);
-  const bw = W / bands;
-  for (let i = 0; i < bands; i++) {
-    if (i % 2 === 0) continue;
-    ctx.fillStyle = "rgba(0,0,0,0.05)";
-    ctx.fillRect(i * bw, 0, bw, H);
-  }
-  const cx = W * (0.12 + rand() * 0.12),
-    cy = H * (0.4 + rand() * 0.2);
-  const rings = 5 + Math.floor(rand() * 4);
-  ctx.save();
+  const cx = W * (0.12 + rand() * 0.16);
+  const cy = H * (0.4 + rand() * 0.2);
+  const rings = 7 + Math.floor(rand() * 6);
   for (let i = 1; i <= rings; i++) {
     const rad = (i / rings) * W * 0.95;
     ctx.beginPath();
     ctx.arc(cx, cy, rad, -Math.PI / 2, Math.PI / 2);
-    ctx.lineWidth = Math.max(6, W * 0.012);
-    ctx.strokeStyle = "rgba(" + r + "," + g + "," + b + ",0.85)";
-    ctx.shadowColor = "rgba(" + r + "," + g + "," + b + ",0.9)";
-    ctx.shadowBlur = W * 0.02;
+    ctx.lineWidth = Math.max(2, W * 0.006);
+    ctx.strokeStyle = rgba(fg, 0.7);
     ctx.stroke();
   }
-  ctx.restore();
-  addGrain(ctx, W, H, 0.1);
 }
 
-function addGrain(
-  ctx: CanvasRenderingContext2D,
-  W: number,
-  H: number,
-  amount: number,
-) {
-  const n = document.createElement("canvas");
-  n.width = 180;
-  n.height = 180;
-  const nc = n.getContext("2d")!;
-  const img = nc.createImageData(180, 180);
-  for (let i = 0; i < img.data.length; i += 4) {
-    const v = Math.random() * 255;
-    img.data[i] = v;
-    img.data[i + 1] = v;
-    img.data[i + 2] = v;
-    img.data[i + 3] = 255;
-  }
-  nc.putImageData(img, 0, 0);
-  ctx.save();
-  ctx.globalAlpha = amount;
-  ctx.globalCompositeOperation = "overlay";
-  for (let y = 0; y < H; y += 180)
-    for (let x = 0; x < W; x += 180) ctx.drawImage(n, x, y);
-  ctx.restore();
-}
-
-// Vertical lines of varying weight — thick and thin bands, rhythmically spaced.
+// Vertical lines of varying weight — thick and thin, rhythmically spaced.
 function drawLines(
   ctx: CanvasRenderingContext2D,
   W: number,
   H: number,
   fg: string,
-  bg: string,
   rand: () => number,
 ) {
-  ctx.fillStyle = bg;
-  ctx.fillRect(0, 0, W, H);
-  const { r, g, b } = hexToRgb(fg);
-  const baseUnit = W / (30 + Math.floor(rand() * 16)); // spacing scale
+  const baseUnit = W / (30 + Math.floor(rand() * 16));
   let x = rand() * baseUnit;
   while (x < W) {
     const thick = rand() > 0.6;
@@ -342,13 +180,237 @@ function drawLines(
     );
     const alpha = thick ? 0.5 + rand() * 0.4 : 0.18 + rand() * 0.3;
     const grd = ctx.createLinearGradient(0, 0, 0, H);
-    grd.addColorStop(0, "rgba(" + r + "," + g + "," + b + "," + alpha + ")");
-    grd.addColorStop(1, "rgba(" + r + "," + g + "," + b + "," + alpha * 0.55 + ")");
+    grd.addColorStop(0, rgba(fg, alpha));
+    grd.addColorStop(1, rgba(fg, alpha * 0.55));
     ctx.fillStyle = grd;
     ctx.fillRect(x, 0, w, H);
-    const gap = baseUnit * (0.25 + rand() * 0.9);
-    x += w + gap;
+    x += w + baseUnit * (0.25 + rand() * 0.9);
   }
+}
+
+// String-art geometry — straight lines spanning point sets to form envelopes.
+function drawString(
+  ctx: CanvasRenderingContext2D,
+  W: number,
+  H: number,
+  fg: string,
+  rand: () => number,
+) {
+  ctx.lineWidth = Math.max(0.5, W * 0.0006);
+  ctx.strokeStyle = rgba(fg, 0.5);
+  const sets = 2 + Math.floor(rand() * 3);
+  for (let s = 0; s < sets; s++) {
+    const n = 22 + Math.floor(rand() * 20);
+    const ax0 = rand() * W,
+      ay0 = rand() * H,
+      ax1 = rand() * W,
+      ay1 = rand() * H;
+    const bx0 = rand() * W,
+      by0 = rand() * H,
+      bx1 = rand() * W,
+      by1 = rand() * H;
+    ctx.beginPath();
+    for (let i = 0; i <= n; i++) {
+      const t = i / n;
+      const pax = ax0 + (ax1 - ax0) * t;
+      const pay = ay0 + (ay1 - ay0) * t;
+      const pbx = bx0 + (bx1 - bx0) * (1 - t);
+      const pby = by0 + (by1 - by0) * (1 - t);
+      ctx.moveTo(pax, pay);
+      ctx.lineTo(pbx, pby);
+    }
+    ctx.stroke();
+  }
+}
+
+// Layered signal waves / sine curves — oscilloscope-like.
+function drawWave(
+  ctx: CanvasRenderingContext2D,
+  W: number,
+  H: number,
+  fg: string,
+  rand: () => number,
+) {
+  const lines = 14 + Math.floor(rand() * 16);
+  ctx.lineWidth = Math.max(0.8, W * 0.0012);
+  for (let i = 0; i < lines; i++) {
+    const baseY = ((i + 0.5) / lines) * H;
+    const amp = (H / lines) * (0.6 + rand() * 1.7);
+    const freq = ((1 + rand() * 4) * Math.PI * 2) / W;
+    const phase = rand() * Math.PI * 2;
+    ctx.beginPath();
+    for (let x = 0; x <= W; x += 2) {
+      const env = 0.5 + 0.5 * Math.sin((x / W) * Math.PI);
+      const y = baseY + Math.sin(x * freq + phase) * amp * env;
+      if (x === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.strokeStyle = rgba(fg, 0.3 + 0.4 * rand());
+    ctx.stroke();
+  }
+}
+
+function renderGeometry(
+  ctx: CanvasRenderingContext2D,
+  geometry: Geometry,
+  W: number,
+  H: number,
+  fg: string,
+  bg: string,
+  rand: () => number,
+) {
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+  if (geometry === "radial") drawRadial(ctx, W, H, fg, rand);
+  else if (geometry === "ripple") drawRipple(ctx, W, H, fg, rand);
+  else if (geometry === "lines") drawLines(ctx, W, H, fg, rand);
+  else if (geometry === "string") drawString(ctx, W, H, fg, rand);
+  else drawWave(ctx, W, H, fg, rand);
+}
+
+/* ---------- effects (loose treatments) ---------- */
+
+// Soft luminous gradient glow, additively blended.
+function effectGlow(
+  ctx: CanvasRenderingContext2D,
+  W: number,
+  H: number,
+  fg: string,
+  rand: () => number,
+) {
+  ctx.save();
+  ctx.globalCompositeOperation = "lighter";
+  const n = 2 + Math.floor(rand() * 2);
+  for (let i = 0; i < n; i++) {
+    const cx = W * (0.2 + rand() * 0.6);
+    const cy = H * (0.2 + rand() * 0.6);
+    const rad = W * (0.25 + rand() * 0.35);
+    const gr = ctx.createRadialGradient(cx, cy, 0, cx, cy, rad);
+    gr.addColorStop(0, rgba(fg, 0.5));
+    gr.addColorStop(1, rgba(fg, 0));
+    ctx.fillStyle = gr;
+    ctx.fillRect(0, 0, W, H);
+  }
+  ctx.restore();
+}
+
+// ASCII / dot-matrix character field overlaid on the geometry.
+function effectAscii(
+  ctx: CanvasRenderingContext2D,
+  W: number,
+  H: number,
+  fg: string,
+  rand: () => number,
+) {
+  const ramp = " .:-=+*#%@";
+  const cols = 54;
+  const cell = W / cols;
+  const rows = Math.ceil(H / cell);
+  ctx.textBaseline = "top";
+  ctx.font = Math.round(cell * 1.05) + 'px ui-monospace, "SF Mono", Menlo, monospace';
+  const blobs: { x: number; y: number; r: number }[] = [];
+  const nb = 2 + Math.floor(rand() * 3);
+  for (let i = 0; i < nb; i++)
+    blobs.push({ x: rand() * W, y: rand() * H, r: (0.15 + rand() * 0.3) * W });
+  const gx = rand(),
+    gy = rand();
+  for (let jy = 0; jy < rows; jy++) {
+    for (let ix = 0; ix < cols; ix++) {
+      const x = ix * cell,
+        y = jy * cell;
+      let v = 0;
+      for (const bl of blobs) {
+        const d = Math.hypot(x - bl.x, y - bl.y);
+        v += Math.max(0, 1 - d / bl.r);
+      }
+      v = Math.min(1, v + (x / W) * gx * 0.4 + (1 - y / H) * gy * 0.4);
+      const ch = ramp[Math.floor(v * (ramp.length - 1))];
+      if (ch === " ") continue;
+      ctx.fillStyle = rgba(fg, 0.25 + 0.45 * v);
+      ctx.fillText(ch, x, y);
+    }
+  }
+}
+
+// Abstract data-visualization marks — gridlines, a plotted line, points.
+function effectDataviz(
+  ctx: CanvasRenderingContext2D,
+  W: number,
+  H: number,
+  fg: string,
+  rand: () => number,
+) {
+  ctx.save();
+  ctx.strokeStyle = rgba(fg, 0.18);
+  ctx.lineWidth = Math.max(0.5, W * 0.0006);
+  const gl = 6 + Math.floor(rand() * 5);
+  for (let i = 1; i < gl; i++) {
+    const y = (i / gl) * H;
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(W, y);
+    ctx.stroke();
+  }
+  const pts = 10 + Math.floor(rand() * 10);
+  const coords: [number, number][] = [];
+  ctx.strokeStyle = rgba(fg, 0.6);
+  ctx.lineWidth = Math.max(1, W * 0.0018);
+  ctx.beginPath();
+  for (let i = 0; i <= pts; i++) {
+    const x = (i / pts) * W;
+    const y = H * (0.18 + rand() * 0.64);
+    coords.push([x, y]);
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+  ctx.fillStyle = rgba(fg, 0.8);
+  const dot = Math.max(2, W * 0.004);
+  for (const [x, y] of coords) {
+    ctx.beginPath();
+    ctx.arc(x, y, dot, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+// Tile the composition into a repeating modular grid.
+function effectRepeat(ctx: CanvasRenderingContext2D, W: number, H: number, rand: () => number) {
+  const tiles = 2 + Math.floor(rand() * 2);
+  const src = document.createElement("canvas");
+  src.width = W;
+  src.height = H;
+  src.getContext("2d")!.drawImage(ctx.canvas, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  const tw = W / tiles,
+    th = H / tiles;
+  for (let y = 0; y < tiles; y++)
+    for (let x = 0; x < tiles; x++) ctx.drawImage(src, x * tw, y * th, tw, th);
+}
+
+// Minimalism — mute most of the composition into negative space.
+function effectMinimal(ctx: CanvasRenderingContext2D, W: number, H: number, bg: string) {
+  ctx.save();
+  ctx.fillStyle = rgba(bg, 0.62);
+  ctx.fillRect(0, 0, W, H);
+  ctx.restore();
+}
+
+function applyEffect(
+  ctx: CanvasRenderingContext2D,
+  effect: Effect | "none",
+  W: number,
+  H: number,
+  fg: string,
+  bg: string,
+  rand: () => number,
+) {
+  if (effect === "glow") effectGlow(ctx, W, H, fg, rand);
+  else if (effect === "ascii") effectAscii(ctx, W, H, fg, rand);
+  else if (effect === "dataviz") effectDataviz(ctx, W, H, fg, rand);
+  else if (effect === "repeat") effectRepeat(ctx, W, H, rand);
+  else if (effect === "minimal") effectMinimal(ctx, W, H, bg);
+  // "none": leave the geometry untouched (used for geometry thumbnails)
 }
 
 // Bottom-left "MAI-Image-2.5" watermark applied to every generated image.
@@ -358,19 +420,19 @@ export function drawStamp(
   H: number,
   fg: string,
 ) {
-  const { r, g, b } = hexToRgb(fg);
   const fs = Math.max(11, Math.round(W * 0.0135));
   ctx.font = "600 " + fs + 'px ui-monospace, "SF Mono", Menlo, monospace';
   ctx.textBaseline = "alphabetic";
   const pad = Math.round(W * 0.022);
-  ctx.fillStyle = "rgba(" + r + "," + g + "," + b + ",0.55)";
+  ctx.fillStyle = rgba(fg, 0.55);
   ctx.fillText("MAI-Image-2.5", pad, H - pad);
 }
 
 /* ---------- orchestration ---------- */
 
 export function paint(
-  design: Design,
+  geometry: Geometry,
+  effect: Effect | "none",
   fg: string,
   bg: string,
   w: number,
@@ -383,31 +445,42 @@ export function paint(
   c.height = h;
   const ctx = c.getContext("2d")!;
   const rand = mulberry32(seed >>> 0);
-  if (design === "weave") drawWeave(ctx, w, h, fg, bg, rand);
-  else if (design === "chevron") drawChevron(ctx, w, h, fg, bg, rand);
-  else if (design === "ascii") drawAscii(ctx, w, h, fg, bg, rand);
-  else if (design === "ripple") drawRipple(ctx, w, h, fg, bg, rand);
-  else drawLines(ctx, w, h, fg, bg, rand);
+  renderGeometry(ctx, geometry, w, h, fg, bg, rand);
+  applyEffect(ctx, effect, w, h, fg, bg, rand);
   if (stamp) drawStamp(ctx, w, h, fg);
   return c.toDataURL("image/png");
 }
 
-// 160×160 thumbnails for the four design buttons, rendered with current colors.
-export function makeSwatches(fg: string, bg: string): Record<Design, string> {
-  const out = {} as Record<Design, string>;
-  for (const { key } of DESIGNS)
-    out[key] = paint(key, fg, bg, 160, 160, hash("sw-" + key), false);
+// 160×160 geometry thumbnails (no effect), reflecting current colors.
+export function makeGeometrySwatches(fg: string, bg: string): Record<Geometry, string> {
+  const out = {} as Record<Geometry, string>;
+  for (const { key } of GEOMETRIES)
+    out[key] = paint(key, "none", fg, bg, 160, 160, hash("geo-" + key), false);
   return out;
 }
 
-// 880×880 live base preview (no watermark) shown before any generation.
-export function makeBasePreview(design: Design, fg: string, bg: string): string {
-  return paint(design, fg, bg, 880, 880, hash("base-" + design), false);
+// 160×160 effect thumbnails — each effect shown over a sample geometry.
+export function makeEffectSwatches(fg: string, bg: string): Record<Effect, string> {
+  const out = {} as Record<Effect, string>;
+  for (const { key } of EFFECTS)
+    out[key] = paint(EFFECT_SAMPLE_GEOM, key, fg, bg, 160, 160, hash("eff-" + key), false);
+  return out;
+}
+
+// 880×880 live base preview (no watermark) — selected geometry + effect.
+export function makeBasePreview(
+  geometry: Geometry,
+  effect: Effect,
+  fg: string,
+  bg: string,
+): string {
+  return paint(geometry, effect, fg, bg, 880, 880, hash("base-" + geometry + effect), false);
 }
 
 // Procedural fallback for Generate: N stamped 1080×1080 samples.
 export function generateSamples(
-  design: Design,
+  geometry: Geometry,
+  effect: Effect,
   fg: string,
   bg: string,
   feeling: string,
@@ -418,9 +491,9 @@ export function generateSamples(
   const samples: string[] = [];
   for (let i = 0; i < n; i++) {
     const seed = hash(
-      feeling + "|" + heading + "|" + design + "|" + fg + bg + "|" + nonce + "|" + i,
+      [feeling, heading, geometry, effect, fg + bg, nonce, i].join("|"),
     );
-    samples.push(paint(design, fg, bg, 1080, 1080, seed, true));
+    samples.push(paint(geometry, effect, fg, bg, 1080, 1080, seed, true));
   }
   return samples;
 }

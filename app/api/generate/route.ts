@@ -1,4 +1,4 @@
-import type { Design } from "@/lib/generators";
+import type { Geometry, Effect } from "@/lib/generators";
 
 // Image generation can take 10–30s for several variations; allow headroom on
 // serverless hosts (e.g. Vercel) where the default function timeout is short.
@@ -6,7 +6,7 @@ export const maxDuration = 60;
 
 // POST /api/generate
 //
-// Body: { design, fg, bg, feeling, heading, variations, nonce }
+// Body: { geometry, effect, fg, bg, feeling, heading, variations, nonce }
 // Returns one of:
 //   { mode: "model",    images: string[] }  — real MAI-Image-2.5 output
 //   { mode: "fallback" }                    — client should render procedurally
@@ -16,7 +16,8 @@ export const maxDuration = 60;
 // request returns `fallback` so the studio keeps working via the canvas generators.
 
 type GenerateBody = {
-  design: Design;
+  geometry: Geometry;
+  effect: Effect;
   fg: string;
   bg: string;
   feeling: string;
@@ -25,37 +26,45 @@ type GenerateBody = {
   nonce: number;
 };
 
-// Loose stylistic starting points per design — kept evocative rather than
-// prescriptive, so the model has room to interpret.
-const DESIGN_PROMPTS: Record<Design, string> = {
-  weave: "woven, interlaced textures — crosshatched threads and lattices of light",
-  chevron: "chevron and zigzag rhythms — stacked angular bands and arrowing forms",
-  ascii: "a generative dot-matrix / ASCII texture — fields of fine marks and shifting density",
-  ripple: "concentric ripples and arcs radiating across the frame, with a soft grain",
+// Step 1 — the base geometry / structure.
+const GEOMETRY_PROMPTS: Record<Geometry, string> = {
+  radial: "a field of concentric radial contour lines, like a topographic map or radar sweep",
+  ripple: "concentric ripples and arcs radiating out from a point",
   lines: "vertical lines of varying weight — thick and thin bands, rhythmically spaced",
+  string: "string-art geometry — straight lines spanning between points to trace curved envelopes",
+  wave: "layered signal waves and sine curves, an oscilloscope-like waveform",
 };
 
-// Leading style framing — pushes the model toward a designed illustration.
+// Step 2 — a loose effect / treatment applied over the geometry.
+const EFFECT_PROMPTS: Record<Effect, string> = {
+  glow: "a soft luminous gradient glow, like a glowing signal",
+  ascii: "an ASCII / dot-matrix character field",
+  dataviz: "the look of an abstract data visualization — graph marks, ticks, plotted points",
+  repeat: "tiled into a repeating modular pattern",
+  minimal: "stripped back to minimalism, lots of negative space and only the essential marks",
+};
+
+// Leading style framing — pushes toward a flat graphic, not a material/photo.
 const PRE_PROMPT =
-  "Flat, graphic editorial illustration — stylized and hand-made, in a screen-print / risograph spirit: bold flat shapes, visible marks and grain, a limited flat palette, paper-like ground. This is a designed illustration, not a photograph.";
+  "Flat, graphic editorial illustration — a stylized geometric composition in a screen-print / risograph spirit: bold flat shapes, clean linework, visible marks and grain, a limited flat palette, paper-like ground. This is a designed graphic, not a photograph and not a physical material.";
 
-// Trailing negative prompt (after the user input) — suppresses realism.
+// Trailing negative prompt (after the user input) — kills realism AND material look.
 const NEGATIVE_PROMPT =
-  "Avoid anything photographic or lifelike: no photorealism, no photography, no 3D render or CGI, no realistic or volumetric lighting, no depth-of-field or lens blur, no smoke or haze, no glossy reflections, no realistic fabric or material textures. Keep it 2D, flat, illustrative, and clearly hand-designed.";
+  "Avoid anything photographic, lifelike, or material: no photorealism, no photography, no 3D render or CGI, no realistic or volumetric lighting, no depth-of-field or lens blur, no smoke or haze, no glossy reflections; and crucially NOT a woven fabric, textile, cloth, basket, threads or fibers, or any physical material / surface texture. Keep it 2D, flat, graphic, and diagrammatic.";
 
-// preprompt → user-driven prompt → negative prompt
+// preprompt → geometry → effect → color → content → negative prompt
 function buildPrompt(b: GenerateBody): string {
   const mood = b.feeling.trim();
   const headline = b.heading.trim();
   return [
     PRE_PROMPT,
-    `Abstract editorial artwork, square 1:1, in the spirit of ${DESIGN_PROMPTS[b.design]}.`,
-    "Take that as a loose starting point and interpret it freely and inventively; vary the composition each time.",
+    `Abstract editorial artwork, square 1:1. Start from ${GEOMETRY_PROMPTS[b.geometry]} as the underlying structure.`,
+    `Then treat it loosely with ${EFFECT_PROMPTS[b.effect]} — applied gently as an effect, not literally. Interpret freely and vary the composition each time.`,
+    `Build the palette around ${b.fg} and ${b.bg}, with freedom to explore related tones, tints, and shades.`,
     mood ? `Evoke a feeling of ${mood}.` : "",
     headline
       ? `It accompanies an article titled “${headline}” — let the title inspire the mood while staying fully abstract.`
       : "",
-    `Build the palette around ${b.fg} and ${b.bg}, with freedom to explore related tones, tints, and shades.`,
     "No text, letters, words, or logos.",
     NEGATIVE_PROMPT,
   ]

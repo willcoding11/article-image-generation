@@ -1,0 +1,19 @@
+# Render blueprint — https://render.com/docs/blueprint-spec
+# Deploys the Next.js app as a web service. The MAI-Image-2.5 key is set in the
+# Render dashboard (sync: false) and never committed.
+services:
+  - type: web
+    name: article-image-generation
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "22.11.0"
+      - key: MAI_IMAGE_API_URL
+        value: https://mai-image-testing.services.ai.azure.com/mai/v1/images/generations
+      - key: MAI_IMAGE_API_KEY
+        sync: false # paste this in the Render dashboard

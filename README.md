@@ -1,36 +1,73 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# MAI·Image Studio
 
-## Getting Started
+A single-page tool for generating abstract editorial artwork to sit beside an
+article heading. Pick a **design** (Weave / Chevron / ASCII / Ripple), choose a
+**foreground** and **background** color, type a **feeling** and an **article
+heading**, then hit **Generate** to produce square (1:1) image variations — each
+stamped `MAI-Image-2.5` in the bottom-left. The chosen image previews live next
+to the headline, and a history strip collects everything generated.
 
-First, run the development server:
+Built with **Next.js 16** (App Router) + **React 19**. Recreated from the design
+handoff prototype.
+
+## Getting started
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+npm run dev        # http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Out of the box the app runs on the **procedural canvas fallback** — no API key
+needed. The four designs are drawn on an HTML canvas (see `lib/generators.ts`).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## MAI-Image-2.5 integration
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+The real image model is wired up in
+[`app/api/generate/route.ts`](app/api/generate/route.ts) and called
+**server-side only**, so the API key never reaches the browser.
 
-## Learn More
+Configure it in `.env.local`:
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+MAI_IMAGE_API_KEY=...                                   # required to use the model
+MAI_IMAGE_API_URL=https://<resource>.services.ai.azure.com/mai/v1/images/generations
+# MAI_IMAGE_MODEL=MAI-Image-2.5                          # optional, this is the default
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+How it works:
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- The endpoint is OpenAI-compatible (`POST` with `Authorization: Bearer`, body
+  `{ model, prompt, n, size }`, response `{ data: [{ b64_json }] }`).
+- It returns **one image per call** (the `n` param is ignored), so the route
+  fans out `variations` parallel calls — each retried once for reliability — and
+  combines the results. Images are 1024×1024.
+- `buildPrompt()` composes the text prompt from the design style + feeling +
+  heading + colors.
+- The client (`components/Studio.tsx`) loads each returned image and overlays the
+  bottom-left `MAI-Image-2.5` watermark via `watermarkDataUrl()` before
+  featuring it.
 
-## Deploy on Vercel
+If the key is unset, or every model call fails, `/api/generate` returns
+`{ mode: "fallback" }` and the client renders procedurally via the canvas
+generators — so the studio always works.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Project layout
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+| Path | Purpose |
+| --- | --- |
+| `app/page.tsx` | Renders `<Studio variations={3} />` |
+| `app/layout.tsx` | Root layout + Newsreader font |
+| `app/globals.css` | Resets, shimmer keyframe, scrollbar, hover states |
+| `components/Studio.tsx` | The full single-screen UI + state model (client) |
+| `lib/generators.ts` | Canvas generators, watermark, fallback generation |
+| `app/api/generate/route.ts` | Server route — the MAI-Image-2.5 seam |
+
+## Configuration
+
+- `variations` (prop in `app/page.tsx`): samples per generate, clamped 2–4,
+  default 3.
+
+## Deploy
+
+Deploys cleanly to Vercel/Netlify. Set `MAI_IMAGE_API_KEY` as an environment
+variable in your host's project settings (never commit it).

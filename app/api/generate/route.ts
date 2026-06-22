@@ -85,7 +85,11 @@ export async function POST(request: Request) {
 // bottom-left "MAI-Image-2.5" watermark on each before featuring it.
 // ─────────────────────────────────────────────────────────────────────────────
 const MODEL = process.env.MAI_IMAGE_MODEL || "MAI-Image-2.5";
-const ENDPOINT = process.env.MAI_IMAGE_API_URL || "";
+// Endpoint URL is not a secret; default to the known endpoint so only the API
+// key needs to be configured. Override via MAI_IMAGE_API_URL for other resources.
+const ENDPOINT =
+  process.env.MAI_IMAGE_API_URL ||
+  "https://mai-image-testing.services.ai.azure.com/mai/v1/images/generations";
 const SIZE = "1024x1024"; // square, matching the studio's 1:1 composition
 
 // One image. The test endpoint occasionally drops a concurrent request, so we

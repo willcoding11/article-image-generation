@@ -29,9 +29,9 @@ The real image model is wired up in
 Configure it in `.env.local`:
 
 ```bash
-MAI_IMAGE_API_KEY=...                                   # required to use the model
-MAI_IMAGE_API_URL=https://<resource>.services.ai.azure.com/mai/v1/images/generations
-# MAI_IMAGE_MODEL=MAI-Image-2.5                          # optional, this is the default
+MAI_IMAGE_API_KEY=...           # required — the only secret you must set
+# MAI_IMAGE_API_URL=...         # optional — defaults to the known endpoint; override for other resources
+# MAI_IMAGE_MODEL=MAI-Image-2.5 # optional — this is the default
 ```
 
 How it works:

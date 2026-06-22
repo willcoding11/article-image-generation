@@ -35,10 +35,20 @@ const DESIGN_PROMPTS: Record<Design, string> = {
   lines: "vertical lines of varying weight — thick and thin bands, rhythmically spaced",
 };
 
+// Leading style framing — pushes the model toward a designed illustration.
+const PRE_PROMPT =
+  "Flat, graphic editorial illustration — stylized and hand-made, in a screen-print / risograph spirit: bold flat shapes, visible marks and grain, a limited flat palette, paper-like ground. This is a designed illustration, not a photograph.";
+
+// Trailing negative prompt (after the user input) — suppresses realism.
+const NEGATIVE_PROMPT =
+  "Avoid anything photographic or lifelike: no photorealism, no photography, no 3D render or CGI, no realistic or volumetric lighting, no depth-of-field or lens blur, no smoke or haze, no glossy reflections, no realistic fabric or material textures. Keep it 2D, flat, illustrative, and clearly hand-designed.";
+
+// preprompt → user-driven prompt → negative prompt
 function buildPrompt(b: GenerateBody): string {
   const mood = b.feeling.trim();
   const headline = b.heading.trim();
   return [
+    PRE_PROMPT,
     `Abstract editorial artwork, square 1:1, in the spirit of ${DESIGN_PROMPTS[b.design]}.`,
     "Take that as a loose starting point and interpret it freely and inventively; vary the composition each time.",
     mood ? `Evoke a feeling of ${mood}.` : "",
@@ -46,7 +56,8 @@ function buildPrompt(b: GenerateBody): string {
       ? `It accompanies an article titled “${headline}” — let the title inspire the mood while staying fully abstract.`
       : "",
     `Build the palette around ${b.fg} and ${b.bg}, with freedom to explore related tones, tints, and shades.`,
-    "Striking and gallery-worthy. No text, letters, words, or logos.",
+    "No text, letters, words, or logos.",
+    NEGATIVE_PROMPT,
   ]
     .filter(Boolean)
     .join(" ");

@@ -60,22 +60,40 @@ export default function Studio({ variations = 3 }: { variations?: number }) {
     setGenerating(true);
     const nonce = Math.floor(Math.random() * 1e9);
     try {
-      const res = await fetch("/api/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ design, fg, bg, feeling, heading, variations: n, nonce }),
-      });
-      const data = res.ok ? await res.json() : null;
+      // One request per variation — keeps each response small (Vercel caps
+      // serverless function responses at ~4.5 MB) and lets the calls run in
+      // parallel. Each returns a single model image (or null on failure).
+      const requests = Array.from({ length: n }, (_, i) =>
+        fetch("/api/generate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            design,
+            fg,
+            bg,
+            feeling,
+            heading,
+            variations: 1,
+            nonce: nonce + i,
+          }),
+        })
+          .then((res) => (res.ok ? res.json() : null))
+          .then((data) =>
+            data?.mode === "model" && data.images?.[0] ? (data.images[0] as string) : null,
+          )
+          .catch(() => null),
+      );
+      const modelImages = (await Promise.all(requests)).filter(
+        (u): u is string => Boolean(u),
+      );
 
-      if (data?.mode === "model" && Array.isArray(data.images) && data.images.length) {
+      if (modelImages.length > 0) {
         // Real MAI-Image-2.5 output — stamp client-side for a consistent watermark.
-        const stamped = await Promise.all(
-          (data.images as string[]).map((u) => watermarkDataUrl(u, fg)),
-        );
+        const stamped = await Promise.all(modelImages.map((u) => watermarkDataUrl(u, fg)));
         commit(stamped);
         return;
       }
-      // Fallback: procedural generation. Keep the shimmer visible briefly.
+      // No model output — procedural fallback. Keep the shimmer visible briefly.
       await new Promise((r) => setTimeout(r, 680));
       commit(generateSamples(design, fg, bg, feeling, heading, n, nonce));
     } catch {

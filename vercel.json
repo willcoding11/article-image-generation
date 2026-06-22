@@ -1,0 +1,10 @@
+{
+  "experimentalServices": {
+    "article-image-generation": {
+      "type": "web",
+      "routePrefix": "/",
+      "framework": "nextjs",
+      "buildCommand": "npm install --include=dev && npm run build"
+    }
+  }
+}

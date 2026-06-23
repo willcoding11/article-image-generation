@@ -53,6 +53,12 @@ export const FG_SWATCHES = [
   { name: "Cobalt", color: "#3a57c4" },
   { name: "Violet", color: "#7b54c6" },
   { name: "Magenta", color: "#c43a86" },
+  { name: "Lilac", color: "#cc9ff9" },
+  { name: "Sky", color: "#7ee3fc" },
+  { name: "Aqua", color: "#70e1d0" },
+  { name: "Lime", color: "#aeed4c" },
+  { name: "Lemon", color: "#fdf150" },
+  { name: "Apricot", color: "#f19859" },
   { name: "Ink", color: "#1a1a1a" },
 ];
 
@@ -63,6 +69,12 @@ export const BG_SWATCHES = [
   { name: "Mist", color: "#e9efe9" },
   { name: "Periwinkle", color: "#eceefb" },
   { name: "Blush", color: "#f7e7e4" },
+  { name: "Lilac", color: "#cc9ff9" },
+  { name: "Sky", color: "#7ee3fc" },
+  { name: "Aqua", color: "#70e1d0" },
+  { name: "Lime", color: "#aeed4c" },
+  { name: "Lemon", color: "#fdf150" },
+  { name: "Apricot", color: "#f19859" },
   { name: "Slate", color: "#23252b" },
   { name: "Black", color: "#141414" },
 ];

@@ -1,5 +1,14 @@
 import type { Style, Geometry, Effect } from "@/lib/generators";
+import { FG_SWATCHES, BG_SWATCHES } from "@/lib/generators";
 import { editImage, phasedGenerationEnabled, classifyFailure, UNCONFIGURED } from "@/lib/maiImage";
+
+// The pickers only offer named swatches, so we can name the exact colour for the
+// model — it follows a name ("Ember") more reliably than a raw hex. Falls back to
+// the bare hex for any colour not in the swatch list.
+function colorName(hex: string, swatches: { name: string; color: string }[]): string {
+  const m = swatches.find((s) => s.color.toLowerCase() === hex.toLowerCase());
+  return m ? `${m.name} (${hex})` : hex;
+}
 
 // Image generation can take 10–30s for several variations; allow headroom on
 // serverless hosts (e.g. Vercel) where the default function timeout is short.
@@ -98,7 +107,7 @@ function buildPrompt(b: GenerateBody): string {
     style.positive,
     `Abstract editorial artwork, square 1:1. Within that style, start from ${GEOMETRY_PROMPTS[b.geometry]} as the underlying structure.`,
     `Then treat it loosely with ${EFFECT_PROMPTS[b.effect]} — applied gently in service of the style, not literally. Interpret freely and vary the composition each time.`,
-    `Build the palette around ${b.fg} and ${b.bg}, with freedom to explore related tones, tints, and shades. ${fieldDesc}.`,
+    `Use these exact colours: the background is ${colorName(b.bg, BG_SWATCHES)} and the foreground marks are ${colorName(b.fg, FG_SWATCHES)}. Match them faithfully — keep the background that exact colour and the foreground marks that exact colour; do not drift to other hues, swap them, or substitute related tones. ${fieldDesc}.`,
     mood ? `Evoke a feeling of ${mood}.` : "",
     headline
       ? `It accompanies an article titled “${headline}” — let the title inspire the mood while staying fully abstract.`
@@ -141,7 +150,7 @@ function buildRefinePrompt(b: GenerateBody): string {
         : "Keep the foreground colour pale and restrained, barely tinting the ground";
   return [
     "Keep the existing composition and linework intact.",
-    `Recolour it faithfully: the background must be exactly ${b.bg} and the foreground marks exactly ${b.fg}. Use these exact colours — do not substitute related tones. ${fieldDesc}.`,
+    `Recolour it faithfully: the background must be exactly ${colorName(b.bg, BG_SWATCHES)} and the foreground marks exactly ${colorName(b.fg, FG_SWATCHES)}. Use these exact colours — do not substitute related tones. ${fieldDesc}.`,
     `Then apply this treatment as the defining effect: ${EFFECT_PROMPTS[b.effect]}.`,
     mood ? `Evoke a feeling of ${mood}.` : "",
     headline ? `It accompanies an article titled “${headline}” — let it inspire the mood while staying abstract.` : "",

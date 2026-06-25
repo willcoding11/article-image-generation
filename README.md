@@ -1,11 +1,13 @@
 # MAI·Image Studio
 
 A single-page tool for generating abstract editorial artwork to sit beside an
-article heading. Pick a **design** (Weave / Chevron / ASCII / Ripple), choose a
-**foreground** and **background** color, type a **feeling** and an **article
-heading**, then hit **Generate** to produce square (1:1) image variations — each
-stamped `MAI-Image-2.5` in the bottom-left. The chosen image previews live next
-to the headline, and a history strip collects everything generated.
+article heading. Pick a **style** (Atmospheric / Geometric), a **geometry**, an
+**effect**, **foreground** and **background** colors, and an **intensity**; type
+a **feeling** and an **article heading**, then hit **Generate** to produce square
+(1:1) image variations — each stamped `MAI-Image-2.5` in the bottom-left. The
+chosen image previews live next to the headline, a text box lets you **edit the
+current image** with a free-form instruction, and a history strip collects
+everything generated.
 
 Built with **Next.js 16** (App Router) + **React 19**. Recreated from the design
 handoff prototype.
@@ -30,26 +32,32 @@ Configure it in `.env.local`:
 
 ```bash
 MAI_IMAGE_API_KEY=...           # required — the only secret you must set
-# MAI_IMAGE_API_URL=...         # optional — defaults to the known endpoint; override for other resources
-# MAI_IMAGE_MODEL=MAI-Image-2.5 # optional — this is the default
+# MAI_IMAGE_API_URL=...         # optional — generations endpoint; defaults to the known resource
+# MAI_IMAGE_EDIT_URL=...        # optional — image-edit endpoint; enables the edit box + phased refine
+# MAI_IMAGE_MODEL=MAI-Image-2.5 # optional — the deployment name; this is the default
 ```
 
 How it works:
 
-- The endpoint is OpenAI-compatible (`POST` with `Authorization: Bearer`, body
-  `{ model, prompt, n, size }`, response `{ data: [{ b64_json }] }`).
-- It returns **one image per call** (the `n` param is ignored), so the route
-  fans out `variations` parallel calls — each retried once for reliability — and
-  combines the results. Images are 1024×1024.
-- `buildPrompt()` composes the text prompt from the design style + feeling +
-  heading + colors.
-- The client (`components/Studio.tsx`) loads each returned image and overlays the
-  bottom-left `MAI-Image-2.5` watermark via `watermarkDataUrl()` before
-  featuring it.
+- `POST` with `Authorization: Bearer <key>` (the resource accepts the key as a
+  bearer token), body `{ model, prompt, n, size }`, response `{ data: [{ b64_json }] }`.
+- It returns **one image per call**, so the route fans out `variations` parallel
+  calls — each retried once for reliability — and combines the results (1024×1024).
+- `buildPrompt()` composes the prompt from **style → geometry → effect → color**,
+  with the chosen intensity tuning the foreground/background gradient.
+- **Phased generation (opt-in):** when `MAI_IMAGE_EDIT_URL` is set, each variation
+  is generated in two steps — a hidden monochrome base, then a recolor + effect
+  edit pass for tighter fidelity to the palette/effect. Off by default (single
+  prompt), which is also gentler on MAI-Image-2.5's tight rate limits.
+- The client (`components/Studio.tsx`) overlays the bottom-left `MAI-Image-2.5`
+  watermark via `watermarkDataUrl()` before featuring each image.
 
-If the key is unset, or every model call fails, `/api/generate` returns
-`{ mode: "fallback" }` and the client renders procedurally via the canvas
-generators — so the studio always works.
+`/api/edit` performs a free-form image-to-image edit on the current image from a
+typed instruction (ignoring the option-bar selectors); requires `MAI_IMAGE_EDIT_URL`.
+
+If the key is unset, or a call fails, the routes return `{ mode: "fallback", … }`
+with a reason and the client renders procedurally (and shows a brief toast
+explaining why) — so the studio always works.
 
 ## Project layout
 
@@ -60,7 +68,9 @@ generators — so the studio always works.
 | `app/globals.css` | Resets, shimmer keyframe, scrollbar, hover states |
 | `components/Studio.tsx` | The full single-screen UI + state model (client) |
 | `lib/generators.ts` | Canvas generators, watermark, fallback generation |
-| `app/api/generate/route.ts` | Server route — the MAI-Image-2.5 seam |
+| `lib/maiImage.ts` | Server-only MAI-Image-2.5 edit calls + fallback reasons |
+| `app/api/generate/route.ts` | Server route — generation (single-shot / phased) |
+| `app/api/edit/route.ts` | Server route — free-form image-to-image edit |
 
 ## Configuration
 

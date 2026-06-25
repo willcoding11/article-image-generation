@@ -1,4 +1,5 @@
 import type { Style, Geometry, Effect } from "@/lib/generators";
+import { editImage, hasEditEndpoint, classifyFailure, UNCONFIGURED } from "@/lib/maiImage";
 
 // Image generation can take 10–30s for several variations; allow headroom on
 // serverless hosts (e.g. Vercel) where the default function timeout is short.
@@ -110,6 +111,47 @@ function buildPrompt(b: GenerateBody): string {
     .join(" ");
 }
 
+// ── Opt-in phase-gated prompts (only used when an edits endpoint is configured) ─
+// Phase 1: a hidden base — style + structure only, monochrome, no colour. Phase 2
+// recolours it to the EXACT palette and applies the effect, so the colour/effect
+// stay faithful to the selection. Falls back to single-shot buildPrompt otherwise.
+function buildBasePrompt(b: GenerateBody): string {
+  const style = STYLE_PROMPTS[b.style] ?? STYLE_PROMPTS.atmospheric;
+  return [
+    PRE_PROMPT,
+    style.pre,
+    style.positive,
+    `Abstract editorial artwork, square 1:1. Within that style, compose ${GEOMETRY_PROMPTS[b.geometry]} as the underlying structure.`,
+    "Render it in plain monochrome — dark marks on a white ground — with no colour and no special effect yet. Interpret freely and vary the composition each time.",
+    "No text, letters, words, or logos.",
+    NEGATIVE_PROMPT,
+    style.negative,
+  ].join(" ");
+}
+
+function buildRefinePrompt(b: GenerateBody): string {
+  const mood = b.feeling.trim();
+  const headline = b.heading.trim();
+  const t = typeof b.intensity === "number" ? b.intensity : 0.8;
+  const fieldDesc =
+    t > 0.66
+      ? "Let the foreground colour read bold and saturated over the ground, with strong contrast"
+      : t > 0.33
+        ? "Let the foreground and ground meet in a balanced, even gradient"
+        : "Keep the foreground colour pale and restrained, barely tinting the ground";
+  return [
+    "Keep the existing composition and linework intact.",
+    `Recolour it faithfully: the background must be exactly ${b.bg} and the foreground marks exactly ${b.fg}. Use these exact colours — do not substitute related tones. ${fieldDesc}.`,
+    `Then apply this treatment as the defining effect: ${EFFECT_PROMPTS[b.effect]}.`,
+    mood ? `Evoke a feeling of ${mood}.` : "",
+    headline ? `It accompanies an article titled “${headline}” — let it inspire the mood while staying abstract.` : "",
+    "No text, letters, words, or logos.",
+    NEGATIVE_PROMPT,
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
 export async function POST(request: Request) {
   let body: GenerateBody;
   try {
@@ -121,7 +163,7 @@ export async function POST(request: Request) {
   const apiKey = process.env.MAI_IMAGE_API_KEY;
   if (!apiKey) {
     // No model configured yet — render procedurally on the client.
-    return Response.json({ mode: "fallback" });
+    return Response.json({ mode: "fallback", ...UNCONFIGURED });
   }
 
   try {
@@ -129,8 +171,8 @@ export async function POST(request: Request) {
     return Response.json({ mode: "model", images });
   } catch (err) {
     console.error("MAI-Image-2.5 generation failed:", err);
-    // Degrade gracefully rather than failing the request.
-    return Response.json({ mode: "fallback", error: String(err) });
+    // Degrade gracefully rather than failing the request — tell the client why.
+    return Response.json({ mode: "fallback", ...classifyFailure(err), error: String(err) });
   }
 }
 
@@ -187,16 +229,32 @@ async function generateOne(
   throw lastErr;
 }
 
+// One variation. When an edits endpoint is configured (opt-in via
+// MAI_IMAGE_EDIT_URL), generate a hidden monochrome base then recolour + apply
+// the effect on top — for stronger fidelity to the palette and effect. Otherwise,
+// and by DEFAULT, a single faithful prompt: proven to work, and half the API
+// calls, which matters under MAI-Image-2.5's tight rate limits.
+async function generateVariation(b: GenerateBody, apiKey: string): Promise<string | null> {
+  if (hasEditEndpoint()) {
+    const base = await generateOne(buildBasePrompt(b), apiKey);
+    if (base) {
+      const refined = await editImage(base, buildRefinePrompt(b));
+      if (refined) return refined;
+    }
+    // Refine unavailable/failed — fall through to the single-shot path.
+  }
+  return generateOne(buildPrompt(b), apiKey);
+}
+
 async function generateWithMaiImage(
   body: GenerateBody,
   apiKey: string,
 ): Promise<string[]> {
   if (!ENDPOINT) throw new Error("MAI_IMAGE_API_URL is not set");
-  const prompt = buildPrompt(body);
   const count = Math.max(1, Math.min(4, body.variations || 3));
 
   const results = await Promise.allSettled(
-    Array.from({ length: count }, () => generateOne(prompt, apiKey)),
+    Array.from({ length: count }, () => generateVariation(body, apiKey)),
   );
   const images = results
     .filter((r): r is PromiseFulfilledResult<string | null> => r.status === "fulfilled")

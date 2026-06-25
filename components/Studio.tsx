@@ -21,6 +21,7 @@ import {
   makeEffectSwatches,
   makeBasePreview,
   generateSamples,
+  generateEditFallback,
   watermarkDataUrl,
 } from "@/lib/generators";
 
@@ -131,6 +132,9 @@ export default function Studio({ variations = 3 }: { variations?: number }) {
   const [featuredUrl, setFeaturedUrl] = useState<string | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [generating, setGenerating] = useState(false);
+  const [editPrompt, setEditPrompt] = useState("");
+  const [editing, setEditing] = useState(false);
+  const [toast, setToast] = useState<{ message: string; tone: "warn" | "info"; id: number } | null>(null);
   const [styleSwatches, setStyleSwatches] = useState<Record<Style, string> | null>(null);
   const [geomSwatches, setGeomSwatches] = useState<Record<Geometry, string> | null>(null);
   const [effectSwatches, setEffectSwatches] = useState<Record<Effect, string> | null>(null);
@@ -152,7 +156,27 @@ export default function Studio({ variations = 3 }: { variations?: number }) {
     setBasePreview(makeBasePreview(style, geometry, effect, fg, bg, intensity));
   }, [style, geometry, effect, fg, bg, intensity]);
 
+  // Auto-dismiss the fallback toast after 5s (re-armed whenever a new one shows).
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 5000);
+    return () => clearTimeout(t);
+  }, [toast]);
+
   const n = Math.max(2, Math.min(4, variations || 3));
+
+  type FallbackData = { mode?: string; message?: string; tone?: "warn" | "info" } | null;
+  function showToast(message: string, tone: "warn" | "info") {
+    setToast({ message, tone, id: Date.now() });
+  }
+  // Surface the reason a batch fell back — prefer a real failure over the
+  // expected "not configured" notice when both are present.
+  function notifyFallback(responses: FallbackData[]) {
+    const fb =
+      responses.find((d) => d?.mode === "fallback" && d.tone === "warn" && d.message) ||
+      responses.find((d) => d?.mode === "fallback" && d.message);
+    if (fb?.message) showToast(fb.message, fb.tone === "warn" ? "warn" : "info");
+  }
 
   function commit(batch: string[]) {
     const label =
@@ -173,32 +197,35 @@ export default function Studio({ variations = 3 }: { variations?: number }) {
       // One request per variation — keeps each response small (Vercel caps
       // serverless function responses at ~4.5 MB) and lets the calls run in
       // parallel. Each returns a single model image (or null on failure).
-      const requests = Array.from({ length: n }, (_, i) =>
-        fetch("/api/generate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            style,
-            geometry,
-            effect,
-            fg,
-            bg,
-            intensity,
-            feeling,
-            heading,
-            variations: 1,
-            nonce: nonce + i,
-          }),
-        })
-          .then((res) => (res.ok ? res.json() : null))
-          .then((data) =>
-            data?.mode === "model" && data.images?.[0] ? (data.images[0] as string) : null,
-          )
-          .catch(() => null),
+      const responses: FallbackData[] = await Promise.all(
+        Array.from({ length: n }, (_, i) =>
+          fetch("/api/generate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              style,
+              geometry,
+              effect,
+              fg,
+              bg,
+              intensity,
+              feeling,
+              heading,
+              variations: 1,
+              nonce: nonce + i,
+            }),
+          })
+            .then((res) => (res.ok ? res.json() : null))
+            .catch(() => null),
+        ),
       );
-      const modelImages = (await Promise.all(requests)).filter(
-        (u): u is string => Boolean(u),
-      );
+      const modelImages = responses
+        .map((d) =>
+          d?.mode === "model" && (d as { images?: string[] }).images?.[0]
+            ? ((d as { images: string[] }).images[0] as string)
+            : null,
+        )
+        .filter((u): u is string => Boolean(u));
 
       if (modelImages.length > 0) {
         // Real MAI-Image-2.5 output — stamp client-side for a consistent watermark.
@@ -206,10 +233,12 @@ export default function Studio({ variations = 3 }: { variations?: number }) {
         commit(stamped);
         return;
       }
-      // No model output — procedural fallback. Keep the shimmer visible briefly.
+      // No model output — say why, then render procedurally (shimmer stays briefly).
+      notifyFallback(responses);
       await new Promise((r) => setTimeout(r, 680));
       commit(generateSamples(style, geometry, effect, fg, bg, intensity, feeling, heading, n, nonce));
     } catch {
+      showToast("Couldn’t reach the model — please try again.", "warn");
       await new Promise((r) => setTimeout(r, 680));
       commit(generateSamples(style, geometry, effect, fg, bg, intensity, feeling, heading, n, nonce));
     }
@@ -223,6 +252,50 @@ export default function Studio({ variations = 3 }: { variations?: number }) {
     if (h) {
       setSamples([h.url]);
       setFeaturedUrl(h.url);
+    }
+  }
+
+  function commitEdit(url: string, instruction: string) {
+    const label = `Edit · ${instruction}`.slice(0, 56);
+    // Surface the result as the featured image, add it to the sample row, and
+    // record it in history. The option-bar selectors are untouched (the edit
+    // deliberately ignored them).
+    setSamples((prev) => [url, ...prev].slice(0, 6));
+    setFeaturedUrl(url);
+    setHistory((prev) => [{ url, label }, ...prev].slice(0, 18));
+    setEditPrompt("");
+    setEditing(false);
+  }
+
+  async function applyEdit() {
+    const instruction = editPrompt.trim();
+    if (!instruction || editing || !featuredImg) return;
+    setEditing(true);
+    const nonce = Math.floor(Math.random() * 1e9);
+    try {
+      const res = await fetch("/api/edit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image: featuredImg, instruction }),
+      });
+      const data: FallbackData & { image?: string } = res.ok ? await res.json() : null;
+      if (data?.mode === "model" && data.image) {
+        const stamped = await watermarkDataUrl(data.image as string, fg);
+        commitEdit(stamped, instruction);
+        return;
+      }
+      // No edit model — say why, then procedural best-effort (shimmer stays briefly).
+      if (data?.mode === "fallback" && data.message) {
+        showToast(data.message, data.tone === "warn" ? "warn" : "info");
+      } else if (!data) {
+        showToast("Couldn’t reach the model — please try again.", "warn");
+      }
+      await new Promise((r) => setTimeout(r, 520));
+      commitEdit(generateEditFallback(instruction, fg, bg, intensity, nonce), instruction);
+    } catch {
+      showToast("Couldn’t reach the model — please try again.", "warn");
+      await new Promise((r) => setTimeout(r, 520));
+      commitEdit(generateEditFallback(instruction, fg, bg, intensity, nonce), instruction);
     }
   }
 
@@ -245,14 +318,48 @@ export default function Studio({ variations = 3 }: { variations?: number }) {
       style={{
         display: "flex",
         flexDirection: "column",
-        height: "100vh",
+        minHeight: "100vh",
         width: "100%",
         background: "#fbfaf6",
         color: "#161512",
         fontFamily: SANS,
-        overflow: "hidden",
       }}
     >
+      {/* ---------- Fallback toast (top-right, auto-dismiss 5s) ---------- */}
+      {toast && (
+        <div
+          key={toast.id}
+          role="status"
+          aria-live="polite"
+          onClick={() => setToast(null)}
+          title="Dismiss"
+          style={{
+            position: "fixed",
+            top: 18,
+            right: 18,
+            zIndex: 50,
+            maxWidth: 330,
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 10,
+            padding: "12px 14px",
+            background: "#fff",
+            border: "1px solid #ece9e2",
+            borderLeft: `3px solid ${toast.tone === "warn" ? "#d23b34" : "#9a968d"}`,
+            boxShadow: "0 14px 34px -14px rgba(0,0,0,0.32)",
+            font: `400 13px/1.45 ${SANS}`,
+            color: "#161512",
+            cursor: "pointer",
+            animation: "maiToastIn 0.22s ease-out",
+          }}
+        >
+          <span aria-hidden style={{ marginTop: 1, color: toast.tone === "warn" ? "#d23b34" : "#9a968d" }}>
+            {toast.tone === "warn" ? "⚠" : "ℹ"}
+          </span>
+          <span>{toast.message}</span>
+        </div>
+      )}
+
       {/* ---------- Header ---------- */}
       <header
         style={{
@@ -514,11 +621,11 @@ export default function Studio({ variations = 3 }: { variations?: number }) {
       </div>
 
       {/* ---------- Preview region ---------- */}
+      {/* Sizes to its content and lets the whole page scroll downward — no inner
+          scroll pane, so the history footer sits naturally below the preview. */}
       <div
         style={{
-          flex: 1,
-          minHeight: 0,
-          overflow: "auto",
+          flex: "none",
           padding: "32px 48px",
           display: "flex",
           gap: 56,
@@ -527,7 +634,7 @@ export default function Studio({ variations = 3 }: { variations?: number }) {
       >
         {/* Left column */}
         <div style={{ flex: "none", display: "flex", flexDirection: "column", gap: 16 }}>
-          {generating ? (
+          {generating || editing ? (
             <div
               style={{
                 width: 420,
@@ -653,6 +760,59 @@ export default function Studio({ variations = 3 }: { variations?: number }) {
                 }}
               >
                 ↻
+              </button>
+            </div>
+          )}
+
+          {/* Edit the current image — free-form, ignores the selectors above. */}
+          {hasSamples && !generating && (
+            <div
+              style={{
+                width: 420,
+                maxWidth: "42vw",
+                display: "flex",
+                flexDirection: "column",
+                gap: 9,
+                marginTop: 6,
+              }}
+            >
+              <div style={sectionLabelStyle}>Edit this image</div>
+              <textarea
+                value={editPrompt}
+                onChange={(e) => setEditPrompt(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) applyEdit();
+                }}
+                disabled={editing}
+                rows={2}
+                placeholder="Describe a change — e.g. “make it darker, more negative space.” Ignores the options above."
+                style={{
+                  resize: "vertical",
+                  border: "1px solid #d8d4cc",
+                  background: "transparent",
+                  padding: "9px 10px",
+                  font: `400 14px/1.4 ${SANS}`,
+                  color: "#161512",
+                  outline: "none",
+                }}
+              />
+              <button
+                className="mai-generate"
+                onClick={applyEdit}
+                disabled={editing || !editPrompt.trim()}
+                style={{
+                  alignSelf: "flex-start",
+                  padding: "10px 22px",
+                  border: "none",
+                  color: "#fbfaf6",
+                  font: `600 11px/1 ${SANS}`,
+                  letterSpacing: "0.16em",
+                  textTransform: "uppercase",
+                  cursor: editing || !editPrompt.trim() ? "default" : "pointer",
+                  opacity: editing || !editPrompt.trim() ? 0.5 : 1,
+                }}
+              >
+                {editing ? "Editing…" : "Apply edit"}
               </button>
             </div>
           )}

@@ -904,6 +904,26 @@ export function generateSamples(
   return samples;
 }
 
+// Procedural fallback for the free-form edit box: when no edit model is
+// configured, derive a fresh composition *directionally* from the typed
+// instruction. Like the real edit pass, it ignores the option-bar selectors and
+// responds to the instruction alone — style, geometry and effect are picked
+// deterministically from the instruction text, while colours and intensity carry
+// over from the image being edited so the result stays coherent.
+export function generateEditFallback(
+  instruction: string,
+  fg: string,
+  bg: string,
+  intensity: number,
+  nonce: number,
+): string {
+  const h = hash("edit|" + instruction + "|" + nonce);
+  const style = STYLES[h % STYLES.length].key;
+  const geometry = GEOMETRIES[(h >>> 4) % GEOMETRIES.length].key;
+  const effect = EFFECTS[(h >>> 8) % EFFECTS.length].key;
+  return paint(style, geometry, effect, fg, bg, intensity, 1080, 1080, h, true);
+}
+
 // Composite the MAI-Image-2.5 watermark onto an already-rendered image
 // (e.g. one returned by the real model). Returns a stamped PNG data URL.
 export function watermarkDataUrl(srcUrl: string, fg: string): Promise<string> {

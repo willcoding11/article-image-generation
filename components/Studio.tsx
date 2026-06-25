@@ -3,14 +3,20 @@
 
 import { useEffect, useState } from "react";
 import {
+  type Style,
   type Geometry,
   type Effect,
+  STYLES,
   GEOMETRIES,
   EFFECTS,
+  STYLE_LABELS,
+  STYLE_FULL,
   GEOMETRY_LABELS,
   EFFECT_LABELS,
+  DEFAULT_INTENSITY,
   FG_SWATCHES,
   BG_SWATCHES,
+  makeStyleSwatches,
   makeGeometrySwatches,
   makeEffectSwatches,
   makeBasePreview,
@@ -111,37 +117,47 @@ function ThumbPicker({
 }
 
 export default function Studio({ variations = 3 }: { variations?: number }) {
-  const [geometry, setGeometry] = useState<Geometry>("wave");
+  // Defaults evoke the Atmospheric Minimalism reference: warm ember on cream,
+  // ripple geometry + glow effect → propagating arcs over a soft warm field.
+  const [style, setStyle] = useState<Style>("atmospheric");
+  const [geometry, setGeometry] = useState<Geometry>("ripple");
   const [effect, setEffect] = useState<Effect>("glow");
-  const [fg, setFg] = useState("#d23b34");
-  const [bg, setBg] = useState("#f4f1ea");
+  const [fg, setFg] = useState("#e0792a");
+  const [bg, setBg] = useState("#f7ecd6");
+  const [intensity, setIntensity] = useState(DEFAULT_INTENSITY);
   const [feeling, setFeeling] = useState("");
   const [heading, setHeading] = useState("");
   const [samples, setSamples] = useState<string[]>([]);
   const [featuredUrl, setFeaturedUrl] = useState<string | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [generating, setGenerating] = useState(false);
+  const [styleSwatches, setStyleSwatches] = useState<Record<Style, string> | null>(null);
   const [geomSwatches, setGeomSwatches] = useState<Record<Geometry, string> | null>(null);
   const [effectSwatches, setEffectSwatches] = useState<Record<Effect, string> | null>(null);
   const [basePreview, setBasePreview] = useState<string | null>(null);
 
-  // Thumbnails reflect the current foreground/background colors.
+  // Style thumbnails depend only on the colors.
   useEffect(() => {
-    setGeomSwatches(makeGeometrySwatches(fg, bg));
-    setEffectSwatches(makeEffectSwatches(fg, bg));
+    setStyleSwatches(makeStyleSwatches(fg, bg));
   }, [fg, bg]);
 
-  // The base preview reflects the selected geometry + effect + colors.
+  // Geometry + effect thumbnails reflect the current style and colors.
   useEffect(() => {
-    setBasePreview(makeBasePreview(geometry, effect, fg, bg));
-  }, [geometry, effect, fg, bg]);
+    setGeomSwatches(makeGeometrySwatches(style, fg, bg));
+    setEffectSwatches(makeEffectSwatches(style, fg, bg));
+  }, [style, fg, bg]);
+
+  // The base preview reflects the selected style + geometry + effect + colors + intensity.
+  useEffect(() => {
+    setBasePreview(makeBasePreview(style, geometry, effect, fg, bg, intensity));
+  }, [style, geometry, effect, fg, bg, intensity]);
 
   const n = Math.max(2, Math.min(4, variations || 3));
 
   function commit(batch: string[]) {
     const label =
       (heading.trim() || feeling.trim() || "Untitled") +
-      ` · ${GEOMETRY_LABELS[geometry]} · ${EFFECT_LABELS[effect]}`;
+      ` · ${STYLE_LABELS[style]} · ${GEOMETRY_LABELS[geometry]} · ${EFFECT_LABELS[effect]}`;
     const hist: HistoryItem[] = batch.map((url) => ({ url, label }));
     setSamples(batch);
     setFeaturedUrl(batch[0] ?? null);
@@ -162,10 +178,12 @@ export default function Studio({ variations = 3 }: { variations?: number }) {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
+            style,
             geometry,
             effect,
             fg,
             bg,
+            intensity,
             feeling,
             heading,
             variations: 1,
@@ -190,10 +208,10 @@ export default function Studio({ variations = 3 }: { variations?: number }) {
       }
       // No model output — procedural fallback. Keep the shimmer visible briefly.
       await new Promise((r) => setTimeout(r, 680));
-      commit(generateSamples(geometry, effect, fg, bg, feeling, heading, n, nonce));
+      commit(generateSamples(style, geometry, effect, fg, bg, intensity, feeling, heading, n, nonce));
     } catch {
       await new Promise((r) => setTimeout(r, 680));
-      commit(generateSamples(geometry, effect, fg, bg, feeling, heading, n, nonce));
+      commit(generateSamples(style, geometry, effect, fg, bg, intensity, feeling, heading, n, nonce));
     }
   }
 
@@ -211,11 +229,12 @@ export default function Studio({ variations = 3 }: { variations?: number }) {
   // ----- derived -----
   const hasSamples = samples.length > 0;
   const featuredImg = hasSamples ? featuredUrl || samples[0] : basePreview;
+  const styleLabel = STYLE_LABELS[style];
   const geomLabel = GEOMETRY_LABELS[geometry];
   const effectLabel = EFFECT_LABELS[effect];
   const featuredCaption = hasSamples
-    ? `${geomLabel} · ${effectLabel} · MAI-Image-2.5`
-    : `Base preview · ${geomLabel} · ${effectLabel}`;
+    ? `${styleLabel} · ${geomLabel} · ${effectLabel} · MAI-Image-2.5`
+    : `${STYLE_FULL[style]} · ${geomLabel} · ${effectLabel}`;
   const showSamples = hasSamples && !generating;
   const hasFeeling = feeling.trim().length > 0;
   const hasHeading = heading.trim().length > 0;
@@ -278,6 +297,15 @@ export default function Studio({ variations = 3 }: { variations?: number }) {
         }}
       >
         <div style={{ display: "flex", gap: 52, flexWrap: "wrap", alignItems: "flex-start" }}>
+          {/* 00 — Style */}
+          <ThumbPicker
+            title="00 — Style"
+            items={STYLES}
+            swatches={styleSwatches}
+            selectedKey={style}
+            onSelect={(k) => setStyle(k as Style)}
+          />
+
           {/* 01 — Geometry */}
           <ThumbPicker
             title="01 — Geometry"
@@ -365,6 +393,42 @@ export default function Studio({ variations = 3 }: { variations?: number }) {
                   )}
                 </button>
               ))}
+            </div>
+          </div>
+
+          {/* 05 — Intensity */}
+          <div>
+            <div style={sectionLabelStyle}>05 — Intensity</div>
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 10,
+                width: 172,
+                paddingTop: 4,
+              }}
+            >
+              <input
+                type="range"
+                min={0}
+                max={100}
+                value={Math.round(intensity * 100)}
+                onChange={(e) => setIntensity(Number(e.target.value) / 100)}
+                aria-label="Foreground / background gradient intensity"
+                style={{ width: "100%", accentColor: fg, cursor: "pointer" }}
+              />
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  font: `500 10px/1 ${MONO}`,
+                  letterSpacing: "0.08em",
+                  color: "#b3afa6",
+                }}
+              >
+                <span>fg / bg gradient</span>
+                <span>{Math.round(intensity * 100)}%</span>
+              </div>
             </div>
           </div>
         </div>

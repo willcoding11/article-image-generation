@@ -1,5 +1,5 @@
 import type { Style, Geometry, Effect } from "@/lib/generators";
-import { editImage, hasEditEndpoint, classifyFailure, UNCONFIGURED } from "@/lib/maiImage";
+import { editImage, phasedGenerationEnabled, classifyFailure, UNCONFIGURED } from "@/lib/maiImage";
 
 // Image generation can take 10–30s for several variations; allow headroom on
 // serverless hosts (e.g. Vercel) where the default function timeout is short.
@@ -229,13 +229,14 @@ async function generateOne(
   throw lastErr;
 }
 
-// One variation. When an edits endpoint is configured (opt-in via
-// MAI_IMAGE_EDIT_URL), generate a hidden monochrome base then recolour + apply
+// One variation. When phased generation is explicitly enabled (MAI_IMAGE_PHASED
+// + an edit endpoint), generate a hidden monochrome base then recolour + apply
 // the effect on top — for stronger fidelity to the palette and effect. Otherwise,
-// and by DEFAULT, a single faithful prompt: proven to work, and half the API
-// calls, which matters under MAI-Image-2.5's tight rate limits.
+// and by DEFAULT, a single faithful prompt: proven to work, and HALF the API
+// calls, which matters under MAI-Image-2.5's tight rate limits. (Configuring the
+// edit box via MAI_IMAGE_EDIT_URL does NOT enable this on its own.)
 async function generateVariation(b: GenerateBody, apiKey: string): Promise<string | null> {
-  if (hasEditEndpoint()) {
+  if (phasedGenerationEnabled()) {
     const base = await generateOne(buildBasePrompt(b), apiKey);
     if (base) {
       const refined = await editImage(base, buildRefinePrompt(b));

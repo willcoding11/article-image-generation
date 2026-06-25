@@ -31,6 +31,14 @@ export function hasEditEndpoint(): boolean {
   return Boolean(EDIT_ENDPOINT);
 }
 
+// Phase-gated generation (hidden base → recolour pass) is a SEPARATE opt-in from
+// the edit box: it doubles the model calls per variation, which blows MAI's tight
+// rate limit. It only runs when explicitly enabled AND an edit endpoint exists,
+// so configuring the edit box alone never silently doubles generation load.
+export function phasedGenerationEnabled(): boolean {
+  return /^(1|true|on|yes)$/i.test(process.env.MAI_IMAGE_PHASED || "") && Boolean(EDIT_ENDPOINT);
+}
+
 function authHeaders(): Record<string, string> {
   const k = process.env.MAI_IMAGE_API_KEY;
   if (!k) throw new Error("MAI_IMAGE_API_KEY is not set");

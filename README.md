@@ -45,10 +45,12 @@ How it works:
   calls — each retried once for reliability — and combines the results (1024×1024).
 - `buildPrompt()` composes the prompt from **style → geometry → effect → color**,
   with the chosen intensity tuning the foreground/background gradient.
-- **Phased generation (opt-in):** when `MAI_IMAGE_EDIT_URL` is set, each variation
-  is generated in two steps — a hidden monochrome base, then a recolor + effect
-  edit pass for tighter fidelity to the palette/effect. Off by default (single
-  prompt), which is also gentler on MAI-Image-2.5's tight rate limits.
+- **Phased generation (opt-in):** when `MAI_IMAGE_PHASED=1` **and** an edit
+  endpoint is configured, each variation is generated in two steps — a hidden
+  monochrome base, then a recolor + effect edit pass for tighter fidelity. Off by
+  default (single prompt), because it doubles the model calls and MAI-Image-2.5's
+  rate limit is tight. Setting `MAI_IMAGE_EDIT_URL` for the edit box alone does
+  **not** turn this on.
 - The client (`components/Studio.tsx`) overlays the bottom-left `MAI-Image-2.5`
   watermark via `watermarkDataUrl()` before featuring each image.
 

@@ -74,6 +74,34 @@ export const EFFECT_LABELS: Record<Effect, string> = {
 // Sample geometry used to render the EFFECT thumbnails (shows the treatment).
 const EFFECT_SAMPLE_GEOM: Geometry = "ripple";
 
+/* ---------- aspect ratio ---------- */
+// MAI-Image-2.5 only outputs 1024×1024, so non-square ratios are produced by
+// centre-cropping that square (see watermarkDataUrl); the procedural preview /
+// fallback are rendered natively at the chosen ratio.
+export type Aspect = "1:1" | "9:16" | "2:3" | "16:9";
+
+export const ASPECTS: { key: Aspect; label: string; w: number; h: number }[] = [
+  { key: "1:1", label: "1:1", w: 1, h: 1 },
+  { key: "9:16", label: "9:16", w: 9, h: 16 },
+  { key: "2:3", label: "2:3", w: 2, h: 3 },
+  { key: "16:9", label: "16:9", w: 16, h: 9 },
+];
+
+const ASPECT_RATIO: Record<Aspect, number> = {
+  "1:1": 1,
+  "9:16": 9 / 16,
+  "2:3": 2 / 3,
+  "16:9": 16 / 9,
+};
+
+// Pixel dimensions for an aspect ratio with the long edge ≈ `long`.
+function aspectDims(aspect: Aspect, long: number): { w: number; h: number } {
+  const r = ASPECT_RATIO[aspect] ?? 1; // width / height
+  return r >= 1
+    ? { w: long, h: Math.round(long / r) }
+    : { w: Math.round(long * r), h: long };
+}
+
 export const FG_SWATCHES = [
   { name: "Crimson", color: "#d23b34" },
   { name: "Ember", color: "#e0792a" },
@@ -869,7 +897,8 @@ export function makeEffectSwatches(
   return out;
 }
 
-// 880×880 live base preview (no watermark) — style + geometry + effect + intensity.
+// Live base preview (no watermark) — style + geometry + effect + intensity,
+// rendered natively at the chosen aspect ratio (long edge ≈ 880).
 export function makeBasePreview(
   style: Style,
   geometry: Geometry,
@@ -877,11 +906,14 @@ export function makeBasePreview(
   fg: string,
   bg: string,
   intensity: number,
+  aspect: Aspect = "1:1",
 ): string {
-  return paint(style, geometry, effect, fg, bg, intensity, 880, 880, hash("base-" + style + geometry + effect), false);
+  const { w, h } = aspectDims(aspect, 880);
+  return paint(style, geometry, effect, fg, bg, intensity, w, h, hash("base-" + style + geometry + effect + aspect), false);
 }
 
-// Procedural fallback for Generate: N stamped 1080×1080 samples.
+// Procedural fallback for Generate: N stamped samples at the chosen aspect
+// ratio (long edge ≈ 1024, matching the model's output resolution).
 export function generateSamples(
   style: Style,
   geometry: Geometry,
@@ -893,13 +925,15 @@ export function generateSamples(
   heading: string,
   n: number,
   nonce: number,
+  aspect: Aspect = "1:1",
 ): string[] {
+  const { w, h } = aspectDims(aspect, 1024);
   const samples: string[] = [];
   for (let i = 0; i < n; i++) {
     const seed = hash(
-      [style, feeling, heading, geometry, effect, fg + bg, intensity, nonce, i].join("|"),
+      [style, feeling, heading, geometry, effect, fg + bg, intensity, aspect, nonce, i].join("|"),
     );
-    samples.push(paint(style, geometry, effect, fg, bg, intensity, 1080, 1080, seed, true));
+    samples.push(paint(style, geometry, effect, fg, bg, intensity, w, h, seed, true));
   }
   return samples;
 }
@@ -916,29 +950,49 @@ export function generateEditFallback(
   bg: string,
   intensity: number,
   nonce: number,
+  aspect: Aspect = "1:1",
 ): string {
-  const h = hash("edit|" + instruction + "|" + nonce);
-  const style = STYLES[h % STYLES.length].key;
-  const geometry = GEOMETRIES[(h >>> 4) % GEOMETRIES.length].key;
-  const effect = EFFECTS[(h >>> 8) % EFFECTS.length].key;
-  return paint(style, geometry, effect, fg, bg, intensity, 1080, 1080, h, true);
+  const seed = hash("edit|" + instruction + "|" + aspect + "|" + nonce);
+  const style = STYLES[seed % STYLES.length].key;
+  const geometry = GEOMETRIES[(seed >>> 4) % GEOMETRIES.length].key;
+  const effect = EFFECTS[(seed >>> 8) % EFFECTS.length].key;
+  const { w, h } = aspectDims(aspect, 1024);
+  return paint(style, geometry, effect, fg, bg, intensity, w, h, seed, true);
 }
 
-// Composite the MAI-Image-2.5 watermark onto an already-rendered image
-// (e.g. one returned by the real model). Returns a stamped PNG data URL.
-export function watermarkDataUrl(srcUrl: string, fg: string): Promise<string> {
+// Centre-crop an already-rendered image (e.g. the model's 1024² output) to the
+// chosen aspect ratio, then composite the MAI-Image-2.5 watermark. Returns a
+// stamped PNG data URL.
+export function watermarkDataUrl(
+  srcUrl: string,
+  fg: string,
+  aspect: Aspect = "1:1",
+): Promise<string> {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.crossOrigin = "anonymous";
     img.onload = () => {
-      const W = img.naturalWidth || 1080;
-      const H = img.naturalHeight || 1080;
+      const sw = img.naturalWidth || 1024;
+      const sh = img.naturalHeight || 1024;
+      const r = ASPECT_RATIO[aspect] ?? 1; // width / height
+      // Largest sub-rectangle of ratio r inside the source, centred.
+      let cw: number;
+      let ch: number;
+      if (sw / sh > r) {
+        ch = sh;
+        cw = Math.round(sh * r);
+      } else {
+        cw = sw;
+        ch = Math.round(sw / r);
+      }
+      const sx = Math.round((sw - cw) / 2);
+      const sy = Math.round((sh - ch) / 2);
       const c = document.createElement("canvas");
-      c.width = W;
-      c.height = H;
+      c.width = cw;
+      c.height = ch;
       const ctx = c.getContext("2d")!;
-      ctx.drawImage(img, 0, 0, W, H);
-      drawStamp(ctx, W, H, fg);
+      ctx.drawImage(img, sx, sy, cw, ch, 0, 0, cw, ch);
+      drawStamp(ctx, cw, ch, fg);
       try {
         resolve(c.toDataURL("image/png"));
       } catch {

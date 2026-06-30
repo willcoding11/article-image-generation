@@ -6,9 +6,11 @@ import {
   type Style,
   type Geometry,
   type Effect,
+  type Aspect,
   STYLES,
   GEOMETRIES,
   EFFECTS,
+  ASPECTS,
   STYLE_LABELS,
   STYLE_FULL,
   GEOMETRY_LABELS,
@@ -38,6 +40,10 @@ const sectionLabelStyle: React.CSSProperties = {
 };
 
 type HistoryItem = { url: string; label: string };
+
+// Max images kept in the history strip. Each item is a multi-MB PNG data URL,
+// so this exists to bound browser memory; tune higher if needed.
+const HISTORY_LIMIT = 100;
 
 // Reusable 64px thumbnail picker (used for both Geometry and Effect).
 function ThumbPicker({
@@ -105,6 +111,9 @@ function ThumbPicker({
                     position: "absolute",
                     inset: 0,
                     border: "2px solid #161512",
+                    // Inner white halo so the ring also stands out on
+                    // dark-background thumbnails (e.g. Black/Slate bg).
+                    boxShadow: "inset 0 0 0 1px #ffffff",
                     pointerEvents: "none",
                   }}
                 />
@@ -126,10 +135,18 @@ export default function Studio({ variations = 3 }: { variations?: number }) {
   const [fg, setFg] = useState("#e0792a");
   const [bg, setBg] = useState("#f7ecd6");
   const [intensity, setIntensity] = useState(DEFAULT_INTENSITY);
+  const [aspect, setAspect] = useState<Aspect>("1:1");
   const [feeling, setFeeling] = useState("");
-  const [heading, setHeading] = useState("");
+  // Heading is no longer collected from the UI but still threaded to the API
+  // (when empty, the prompt builder skips the "accompanies an article…" clause).
+  const heading = "";
   const [samples, setSamples] = useState<string[]>([]);
   const [featuredUrl, setFeaturedUrl] = useState<string | null>(null);
+  // When true, the featured area shows the live procedural base preview instead
+  // of the current generated/selected sample — so changing settings after a
+  // generation gives immediate visual feedback. Cleared by run / selectSample /
+  // loadHistory; set by any setting that affects the canvas preview.
+  const [dirty, setDirty] = useState(false);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [generating, setGenerating] = useState(false);
   const [editPrompt, setEditPrompt] = useState("");
@@ -151,10 +168,19 @@ export default function Studio({ variations = 3 }: { variations?: number }) {
     setEffectSwatches(makeEffectSwatches(style, fg, bg));
   }, [style, fg, bg]);
 
-  // The base preview reflects the selected style + geometry + effect + colors + intensity.
+  // The base preview reflects style + geometry + effect + colors + intensity + aspect.
   useEffect(() => {
-    setBasePreview(makeBasePreview(style, geometry, effect, fg, bg, intensity));
-  }, [style, geometry, effect, fg, bg, intensity]);
+    setBasePreview(makeBasePreview(style, geometry, effect, fg, bg, intensity, aspect));
+  }, [style, geometry, effect, fg, bg, intensity, aspect]);
+
+  // When any visual setting changes after a generation, dirty the view so the
+  // featured area switches to the live base preview. (The effect also fires on
+  // mount, but samples is empty then, so the if-check is a no-op.)
+  const hasSamplesNow = samples.length > 0;
+  useEffect(() => {
+    if (hasSamplesNow) setDirty(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [style, geometry, effect, fg, bg, intensity, aspect]);
 
   // Auto-dismiss the fallback toast after 5s (re-armed whenever a new one shows).
   useEffect(() => {
@@ -185,8 +211,9 @@ export default function Studio({ variations = 3 }: { variations?: number }) {
     const hist: HistoryItem[] = batch.map((url) => ({ url, label }));
     setSamples(batch);
     setFeaturedUrl(batch[0] ?? null);
-    setHistory((prev) => [...hist, ...prev].slice(0, 18));
+    setHistory((prev) => [...hist, ...prev].slice(0, HISTORY_LIMIT));
     setGenerating(false);
+    setDirty(false);
   }
 
   async function run() {
@@ -209,6 +236,7 @@ export default function Studio({ variations = 3 }: { variations?: number }) {
               fg,
               bg,
               intensity,
+              aspect,
               feeling,
               heading,
               variations: 1,
@@ -229,29 +257,31 @@ export default function Studio({ variations = 3 }: { variations?: number }) {
 
       if (modelImages.length > 0) {
         // Real MAI-Image-2.5 output — stamp client-side for a consistent watermark.
-        const stamped = await Promise.all(modelImages.map((u) => watermarkDataUrl(u, fg)));
+        const stamped = await Promise.all(modelImages.map((u) => watermarkDataUrl(u, fg, aspect)));
         commit(stamped);
         return;
       }
       // No model output — say why, then render procedurally (shimmer stays briefly).
       notifyFallback(responses);
       await new Promise((r) => setTimeout(r, 680));
-      commit(generateSamples(style, geometry, effect, fg, bg, intensity, feeling, heading, n, nonce));
+      commit(generateSamples(style, geometry, effect, fg, bg, intensity, feeling, heading, n, nonce, aspect));
     } catch {
       showToast("Couldn’t reach the model — please try again.", "warn");
       await new Promise((r) => setTimeout(r, 680));
-      commit(generateSamples(style, geometry, effect, fg, bg, intensity, feeling, heading, n, nonce));
+      commit(generateSamples(style, geometry, effect, fg, bg, intensity, feeling, heading, n, nonce, aspect));
     }
   }
 
   function selectSample(i: number) {
     setFeaturedUrl(samples[i]);
+    setDirty(false);
   }
   function loadHistory(i: number) {
     const h = history[i];
     if (h) {
       setSamples([h.url]);
       setFeaturedUrl(h.url);
+      setDirty(false);
     }
   }
 
@@ -262,9 +292,10 @@ export default function Studio({ variations = 3 }: { variations?: number }) {
     // deliberately ignored them).
     setSamples((prev) => [url, ...prev].slice(0, 6));
     setFeaturedUrl(url);
-    setHistory((prev) => [{ url, label }, ...prev].slice(0, 18));
+    setHistory((prev) => [{ url, label }, ...prev].slice(0, HISTORY_LIMIT));
     setEditPrompt("");
     setEditing(false);
+    setDirty(false);
   }
 
   async function applyEdit() {
@@ -276,11 +307,11 @@ export default function Studio({ variations = 3 }: { variations?: number }) {
       const res = await fetch("/api/edit", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ image: featuredImg, instruction }),
+        body: JSON.stringify({ image: featuredImg, instruction, aspect }),
       });
       const data: FallbackData & { image?: string } = res.ok ? await res.json() : null;
       if (data?.mode === "model" && data.image) {
-        const stamped = await watermarkDataUrl(data.image as string, fg);
+        const stamped = await watermarkDataUrl(data.image as string, fg, aspect);
         commitEdit(stamped, instruction);
         return;
       }
@@ -291,27 +322,40 @@ export default function Studio({ variations = 3 }: { variations?: number }) {
         showToast("Couldn’t reach the model — please try again.", "warn");
       }
       await new Promise((r) => setTimeout(r, 520));
-      commitEdit(generateEditFallback(instruction, fg, bg, intensity, nonce), instruction);
+      commitEdit(generateEditFallback(instruction, fg, bg, intensity, nonce, aspect), instruction);
     } catch {
       showToast("Couldn’t reach the model — please try again.", "warn");
       await new Promise((r) => setTimeout(r, 520));
-      commitEdit(generateEditFallback(instruction, fg, bg, intensity, nonce), instruction);
+      commitEdit(generateEditFallback(instruction, fg, bg, intensity, nonce, aspect), instruction);
     }
   }
 
   // ----- derived -----
   const hasSamples = samples.length > 0;
-  const featuredImg = hasSamples ? featuredUrl || samples[0] : basePreview;
+  // While `dirty` (settings changed since the last generation), show the live
+  // base preview instead of the generated image, so the picture tracks the
+  // current settings.
+  const showingPreview = !hasSamples || dirty;
+  const featuredImg = showingPreview ? basePreview : featuredUrl || samples[0];
   const styleLabel = STYLE_LABELS[style];
   const geomLabel = GEOMETRY_LABELS[geometry];
   const effectLabel = EFFECT_LABELS[effect];
-  const featuredCaption = hasSamples
-    ? `${styleLabel} · ${geomLabel} · ${effectLabel} · MAI-Image-2.5`
-    : `${STYLE_FULL[style]} · ${geomLabel} · ${effectLabel}`;
+  const featuredCaption = showingPreview
+    ? `Preview · ${styleLabel} · ${geomLabel} · ${effectLabel}`
+    : `${styleLabel} · ${geomLabel} · ${effectLabel} · MAI-Image-2.5`;
   const showSamples = hasSamples && !generating;
-  const hasFeeling = feeling.trim().length > 0;
-  const hasHeading = heading.trim().length > 0;
   const historyCount = String(history.length).padStart(2, "0") + " saved";
+
+  // Featured/shimmer/edit box, sized to the chosen aspect ratio within bounds.
+  const ar = ASPECTS.find((a) => a.key === aspect) ?? ASPECTS[0];
+  const MAX_W = 420;
+  const MAX_H = 520;
+  let boxW = MAX_W;
+  let boxH = (MAX_W * ar.h) / ar.w;
+  if (boxH > MAX_H) {
+    boxH = MAX_H;
+    boxW = (MAX_H * ar.w) / ar.h;
+  }
 
   return (
     <div
@@ -392,254 +436,204 @@ export default function Studio({ variations = 3 }: { variations?: number }) {
         </span>
       </header>
 
-      {/* ---------- Options bar ---------- */}
+      {/* ---------- Main: controls (left) + preview (right) ---------- */}
       <div
         style={{
+          display: "grid",
+          gridTemplateColumns: "minmax(0, 1fr) auto",
+          gap: 56,
+          padding: "32px 48px",
+          alignItems: "start",
           flex: "none",
-          borderBottom: "1px solid #ece9e2",
-          padding: "20px 48px 22px",
-          display: "flex",
-          flexDirection: "column",
-          gap: 20,
         }}
       >
-        <div style={{ display: "flex", gap: 52, flexWrap: "wrap", alignItems: "flex-start" }}>
-          {/* 00 — Style */}
-          <ThumbPicker
-            title="00 — Style"
-            items={STYLES}
-            swatches={styleSwatches}
-            selectedKey={style}
-            onSelect={(k) => setStyle(k as Style)}
-          />
-
-          {/* 01 — Geometry */}
-          <ThumbPicker
-            title="01 — Geometry"
-            items={GEOMETRIES}
-            swatches={geomSwatches}
-            selectedKey={geometry}
-            onSelect={(k) => setGeometry(k as Geometry)}
-          />
-
-          {/* 02 — Effect */}
-          <ThumbPicker
-            title="02 — Effect"
-            items={EFFECTS}
-            swatches={effectSwatches}
-            selectedKey={effect}
-            onSelect={(k) => setEffect(k as Effect)}
-          />
-
-          {/* 03 — Foreground */}
-          <div>
-            <div style={sectionLabelStyle}>03 — Foreground</div>
-            <div style={{ display: "flex", gap: 9, flexWrap: "wrap", maxWidth: 340 }}>
-              {FG_SWATCHES.map((c) => (
-                <button
-                  key={c.color}
-                  onClick={() => setFg(c.color)}
-                  title={c.name}
-                  style={{
-                    position: "relative",
-                    width: 28,
-                    height: 28,
-                    borderRadius: "50%",
-                    border: "1px solid rgba(0,0,0,0.1)",
-                    padding: 0,
-                    margin: 0,
-                    cursor: "pointer",
-                    background: c.color,
-                  }}
-                >
-                  {c.color === fg && (
-                    <span
-                      style={{
-                        position: "absolute",
-                        inset: -4,
-                        borderRadius: "50%",
-                        border: "1.5px solid #161512",
-                      }}
-                    />
-                  )}
-                </button>
-              ))}
+        {/* LEFT — controls column */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 24, minWidth: 0 }}>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "auto 1fr",
+              columnGap: 56,
+              rowGap: 22,
+              alignItems: "start",
+            }}
+          >
+            <ThumbPicker
+              title="Style"
+              items={STYLES}
+              swatches={styleSwatches}
+              selectedKey={style}
+              onSelect={(k) => setStyle(k as Style)}
+            />
+            <div>
+              <div style={sectionLabelStyle}>Background color</div>
+              <div style={{ display: "flex", gap: 9, flexWrap: "wrap", maxWidth: 340 }}>
+                {BG_SWATCHES.map((c) => (
+                  <button
+                    key={c.color}
+                    onClick={() => setBg(c.color)}
+                    title={c.name}
+                    style={{
+                      position: "relative",
+                      width: 28,
+                      height: 28,
+                      borderRadius: "50%",
+                      border: "1px solid rgba(0,0,0,0.1)",
+                      padding: 0,
+                      margin: 0,
+                      cursor: "pointer",
+                      background: c.color,
+                    }}
+                  >
+                    {c.color === bg && (
+                      <span
+                        style={{
+                          position: "absolute",
+                          inset: -4,
+                          borderRadius: "50%",
+                          border: "1.5px solid #161512",
+                        }}
+                      />
+                    )}
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
 
-          {/* 04 — Background */}
-          <div>
-            <div style={sectionLabelStyle}>04 — Background</div>
-            <div style={{ display: "flex", gap: 9, flexWrap: "wrap", maxWidth: 340 }}>
-              {BG_SWATCHES.map((c) => (
-                <button
-                  key={c.color}
-                  onClick={() => setBg(c.color)}
-                  title={c.name}
-                  style={{
-                    position: "relative",
-                    width: 28,
-                    height: 28,
-                    borderRadius: "50%",
-                    border: "1px solid rgba(0,0,0,0.1)",
-                    padding: 0,
-                    margin: 0,
-                    cursor: "pointer",
-                    background: c.color,
-                  }}
-                >
-                  {c.color === bg && (
-                    <span
-                      style={{
-                        position: "absolute",
-                        inset: -4,
-                        borderRadius: "50%",
-                        border: "1.5px solid #161512",
-                      }}
-                    />
-                  )}
-                </button>
-              ))}
+            <ThumbPicker
+              title="Geometry"
+              items={GEOMETRIES}
+              swatches={geomSwatches}
+              selectedKey={geometry}
+              onSelect={(k) => setGeometry(k as Geometry)}
+            />
+            <div>
+              <div style={sectionLabelStyle}>Foreground color</div>
+              <div style={{ display: "flex", gap: 9, flexWrap: "wrap", maxWidth: 340 }}>
+                {FG_SWATCHES.map((c) => (
+                  <button
+                    key={c.color}
+                    onClick={() => setFg(c.color)}
+                    title={c.name}
+                    style={{
+                      position: "relative",
+                      width: 28,
+                      height: 28,
+                      borderRadius: "50%",
+                      border: "1px solid rgba(0,0,0,0.1)",
+                      padding: 0,
+                      margin: 0,
+                      cursor: "pointer",
+                      background: c.color,
+                    }}
+                  >
+                    {c.color === fg && (
+                      <span
+                        style={{
+                          position: "absolute",
+                          inset: -4,
+                          borderRadius: "50%",
+                          border: "1.5px solid #161512",
+                        }}
+                      />
+                    )}
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
 
-          {/* 05 — Intensity */}
-          <div>
-            <div style={sectionLabelStyle}>05 — Intensity</div>
-            <div
-              style={{
-                display: "flex",
-                flexDirection: "column",
-                gap: 10,
-                width: 172,
-                paddingTop: 4,
-              }}
-            >
-              <input
-                type="range"
-                min={0}
-                max={100}
-                value={Math.round(intensity * 100)}
-                onChange={(e) => setIntensity(Number(e.target.value) / 100)}
-                aria-label="Foreground / background gradient intensity"
-                style={{ width: "100%", accentColor: fg, cursor: "pointer" }}
-              />
+            <ThumbPicker
+              title="Effect"
+              items={EFFECTS}
+              swatches={effectSwatches}
+              selectedKey={effect}
+              onSelect={(k) => setEffect(k as Effect)}
+            />
+            <div>
+              <div style={sectionLabelStyle}>Intensity</div>
               <div
                 style={{
                   display: "flex",
-                  justifyContent: "space-between",
-                  font: `500 10px/1 ${MONO}`,
-                  letterSpacing: "0.08em",
-                  color: "#b3afa6",
+                  flexDirection: "column",
+                  gap: 10,
+                  width: 220,
+                  paddingTop: 4,
                 }}
               >
-                <span>fg / bg gradient</span>
-                <span>{Math.round(intensity * 100)}%</span>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  value={Math.round(intensity * 100)}
+                  onChange={(e) => setIntensity(Number(e.target.value) / 100)}
+                  aria-label="Foreground / background gradient intensity"
+                  style={{ width: "100%", accentColor: fg, cursor: "pointer" }}
+                />
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    font: `500 10px/1 ${MONO}`,
+                    letterSpacing: "0.08em",
+                    color: "#b3afa6",
+                  }}
+                >
+                  <span>fg / bg gradient</span>
+                  <span>{Math.round(intensity * 100)}%</span>
+                </div>
               </div>
             </div>
           </div>
-        </div>
 
-        {/* Row B — inputs + generate */}
-        <div style={{ display: "flex", gap: 28, alignItems: "flex-end", flexWrap: "wrap" }}>
-          <label style={{ flex: "1 1 240px", minWidth: 200, display: "flex", flexDirection: "column", gap: 9 }}>
-            <span
-              style={{
-                font: `600 11px/1 ${SANS}`,
-                letterSpacing: "0.16em",
-                textTransform: "uppercase",
-                color: "#9a968d",
-              }}
-            >
-              Feeling / Prompt
-            </span>
+          {/* Prompt row */}
+          <div style={{ display: "flex", gap: 12, alignItems: "stretch", marginTop: 4 }}>
             <input
               type="text"
               value={feeling}
               onChange={(e) => setFeeling(e.target.value)}
-              placeholder="quiet, electric, vast, hopeful…"
+              onKeyDown={(e) => { if (e.key === "Enter" && !generating) run(); }}
+              placeholder="Prompt"
+              aria-label="Prompt"
               style={{
-                border: "none",
-                borderBottom: "1px solid #d8d4cc",
-                background: "transparent",
-                padding: "8px 2px",
+                flex: "1 1 auto",
+                minWidth: 0,
+                border: "1px solid #d8d4cc",
+                borderRadius: 8,
+                background: "#fff",
+                padding: "12px 14px",
                 font: `400 15px/1.3 ${SANS}`,
                 color: "#161512",
                 outline: "none",
               }}
             />
-          </label>
-
-          <label style={{ flex: "1 1 240px", minWidth: 200, display: "flex", flexDirection: "column", gap: 9 }}>
-            <span
+            <button
+              className="mai-generate"
+              onClick={run}
+              disabled={generating}
               style={{
-                font: `600 11px/1 ${SANS}`,
+                flex: "none",
+                padding: "0 28px",
+                border: "none",
+                borderRadius: 8,
+                color: "#fbfaf6",
+                font: `600 12px/1 ${SANS}`,
                 letterSpacing: "0.16em",
                 textTransform: "uppercase",
-                color: "#9a968d",
+                cursor: generating ? "default" : "pointer",
               }}
             >
-              Article heading
-            </span>
-            <input
-              type="text"
-              value={heading}
-              onChange={(e) => setHeading(e.target.value)}
-              placeholder="The headline this image will sit beside"
-              style={{
-                border: "none",
-                borderBottom: "1px solid #d8d4cc",
-                background: "transparent",
-                padding: "8px 2px",
-                fontFamily: SERIF,
-                fontSize: 18,
-                lineHeight: 1.3,
-                color: "#161512",
-                outline: "none",
-              }}
-            />
-          </label>
-
-          <button
-            className="mai-generate"
-            onClick={run}
-            disabled={generating}
-            style={{
-              flex: "none",
-              padding: "14px 34px",
-              border: "none",
-              color: "#fbfaf6",
-              font: `600 12px/1 ${SANS}`,
-              letterSpacing: "0.16em",
-              textTransform: "uppercase",
-              cursor: generating ? "default" : "pointer",
-            }}
-          >
-            {generating ? "Generating…" : "Generate"}
-          </button>
+              {generating ? "Generating…" : "Generate"}
+            </button>
+          </div>
         </div>
-      </div>
 
-      {/* ---------- Preview region ---------- */}
-      {/* Sizes to its content and lets the whole page scroll downward — no inner
-          scroll pane, so the history footer sits naturally below the preview. */}
-      <div
-        style={{
-          flex: "none",
-          padding: "32px 48px",
-          display: "flex",
-          gap: 56,
-          alignItems: "flex-start",
-        }}
-      >
-        {/* Left column */}
-        <div style={{ flex: "none", display: "flex", flexDirection: "column", gap: 16 }}>
+        {/* RIGHT — preview column */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           {generating || editing ? (
             <div
               style={{
-                width: 420,
-                maxWidth: "42vw",
-                aspectRatio: "1 / 1",
+                width: boxW,
+                height: boxH,
                 background: "linear-gradient(90deg,#f3f1ea 25%,#e9e6df 37%,#f3f1ea 63%)",
                 backgroundSize: "200% 100%",
                 animation: "maiShimmer 1.3s ease-in-out infinite",
@@ -649,8 +643,8 @@ export default function Studio({ variations = 3 }: { variations?: number }) {
             <div
               style={{
                 position: "relative",
-                width: 420,
-                maxWidth: "42vw",
+                width: boxW,
+                height: boxH,
                 boxShadow: "0 1px 0 #ece9e2, 0 26px 60px -34px rgba(0,0,0,0.32)",
               }}
             >
@@ -661,13 +655,13 @@ export default function Studio({ variations = 3 }: { variations?: number }) {
                   style={{
                     display: "block",
                     width: "100%",
-                    aspectRatio: "1 / 1",
+                    height: "100%",
                     objectFit: "cover",
                     border: "1px solid #ece9e2",
                   }}
                 />
               )}
-              {hasSamples && featuredImg && (
+              {hasSamples && !showingPreview && featuredImg && (
                 <a
                   className="mai-download"
                   href={featuredImg}
@@ -695,11 +689,58 @@ export default function Studio({ variations = 3 }: { variations?: number }) {
             </div>
           )}
 
+          {/* Aspect ratio thumbnails — below the preview, sized to ratio */}
+          <div style={{ display: "flex", gap: 12, alignItems: "flex-end", marginTop: 4 }}>
+            {ASPECTS.map(({ key, label, w, h }) => {
+              const selected = key === aspect;
+              const cap = 38;
+              const sw = w >= h ? cap : (cap * w) / h;
+              const sh = h >= w ? cap : (cap * h) / w;
+              return (
+                <button
+                  key={key}
+                  onClick={() => setAspect(key)}
+                  title={label}
+                  aria-pressed={selected}
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    gap: 6,
+                    padding: 0,
+                    border: "none",
+                    background: "none",
+                    cursor: "pointer",
+                  }}
+                >
+                  <span
+                    style={{
+                      width: sw,
+                      height: sh,
+                      background: selected ? "#161512" : "#fff",
+                      border: `1.5px solid ${selected ? "#161512" : "#c4bfb6"}`,
+                    }}
+                  />
+                  <span
+                    style={{
+                      font: `600 9px/1 ${SANS}`,
+                      letterSpacing: "0.06em",
+                      color: selected ? "#161512" : "#9a968d",
+                    }}
+                  >
+                    {label}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
           <div
             style={{
               font: `500 10px/1 ${MONO}`,
               letterSpacing: "0.08em",
               color: "#b3afa6",
+              marginTop: 2,
             }}
           >
             {featuredCaption}
@@ -737,6 +778,9 @@ export default function Studio({ variations = 3 }: { variations?: number }) {
                           position: "absolute",
                           inset: 0,
                           border: "2px solid #161512",
+                          // Inner white halo so the ring stands out on
+                          // dark-background sample images too.
+                          boxShadow: "inset 0 0 0 1px #ffffff",
                           pointerEvents: "none",
                         }}
                       />
@@ -768,8 +812,7 @@ export default function Studio({ variations = 3 }: { variations?: number }) {
           {hasSamples && !generating && (
             <div
               style={{
-                width: 420,
-                maxWidth: "42vw",
+                width: boxW,
                 display: "flex",
                 flexDirection: "column",
                 gap: 9,
@@ -789,6 +832,7 @@ export default function Studio({ variations = 3 }: { variations?: number }) {
                 style={{
                   resize: "vertical",
                   border: "1px solid #d8d4cc",
+                  borderRadius: 6,
                   background: "transparent",
                   padding: "9px 10px",
                   font: `400 14px/1.4 ${SANS}`,
@@ -797,19 +841,21 @@ export default function Studio({ variations = 3 }: { variations?: number }) {
                 }}
               />
               <button
-                className="mai-generate"
                 onClick={applyEdit}
-                disabled={editing || !editPrompt.trim()}
+                disabled={editing || editPrompt.trim().length === 0}
+                className="mai-generate"
                 style={{
                   alignSelf: "flex-start",
                   padding: "10px 22px",
                   border: "none",
+                  borderRadius: 6,
                   color: "#fbfaf6",
                   font: `600 11px/1 ${SANS}`,
-                  letterSpacing: "0.16em",
+                  letterSpacing: "0.14em",
                   textTransform: "uppercase",
-                  cursor: editing || !editPrompt.trim() ? "default" : "pointer",
-                  opacity: editing || !editPrompt.trim() ? 0.5 : 1,
+                  cursor:
+                    editing || editPrompt.trim().length === 0 ? "default" : "pointer",
+                  opacity: editPrompt.trim().length === 0 ? 0.5 : 1,
                 }}
               >
                 {editing ? "Editing…" : "Apply edit"}
@@ -817,38 +863,8 @@ export default function Studio({ variations = 3 }: { variations?: number }) {
             </div>
           )}
         </div>
-
-        {/* Right column — editorial composition */}
-        <div style={{ flex: 1, minWidth: 0, paddingTop: 4 }}>
-          {hasFeeling && (
-            <div
-              style={{
-                font: `600 11px/1.4 ${MONO}`,
-                letterSpacing: "0.2em",
-                textTransform: "uppercase",
-                color: "#a8a298",
-                marginBottom: 20,
-              }}
-            >
-              {feeling}
-            </div>
-          )}
-          <h1
-            style={{
-              margin: 0,
-              fontFamily: SERIF,
-              fontWeight: 400,
-              fontSize: "clamp(34px,4.4vw,66px)",
-              lineHeight: 1.05,
-              letterSpacing: "-0.015em",
-              color: hasHeading ? "#161512" : "#d9d4cb",
-              textWrap: "balance",
-            }}
-          >
-            {hasHeading ? heading : "Your article heading appears here, beside the image."}
-          </h1>
-        </div>
       </div>
+
 
       {/* ---------- Footer / History ---------- */}
       <footer

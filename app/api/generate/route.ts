@@ -1,4 +1,4 @@
-import type { Style, Geometry, Effect } from "@/lib/generators";
+import type { Style, Geometry, Effect, Aspect } from "@/lib/generators";
 import { FG_SWATCHES, BG_SWATCHES } from "@/lib/generators";
 import { editImage, phasedGenerationEnabled, classifyFailure, UNCONFIGURED } from "@/lib/maiImage";
 
@@ -32,10 +32,19 @@ type GenerateBody = {
   fg: string;
   bg: string;
   intensity: number; // 0–1: how strongly the foreground saturates the ground
+  aspect?: Aspect; // final framing — the square output is centre-cropped to this
   feeling: string;
   heading: string;
   variations: number;
   nonce: number;
+};
+
+// The model only renders square; we centre-crop to the target ratio afterward,
+// so nudge it to keep the key composition centred for non-square frames.
+const FRAME_HINT: Partial<Record<Aspect, string>> = {
+  "9:16": "tall vertical (9:16) portrait",
+  "2:3": "vertical (2:3) portrait",
+  "16:9": "wide (16:9) landscape",
 };
 
 // Step 0 — the overall style. This is the leading aesthetic: it frames the
@@ -108,6 +117,9 @@ function buildPrompt(b: GenerateBody): string {
     `Abstract editorial artwork, square 1:1. Within that style, start from ${GEOMETRY_PROMPTS[b.geometry]} as the underlying structure.`,
     `Then treat it loosely with ${EFFECT_PROMPTS[b.effect]} — applied gently in service of the style, not literally. Interpret freely and vary the composition each time.`,
     `Use these exact colours: the background is ${colorName(b.bg, BG_SWATCHES)} and the foreground marks are ${colorName(b.fg, FG_SWATCHES)}. Match them faithfully — keep the background that exact colour and the foreground marks that exact colour; do not drift to other hues, swap them, or substitute related tones. ${fieldDesc}.`,
+    b.aspect && FRAME_HINT[b.aspect]
+      ? `The square image will be centre-cropped to a ${FRAME_HINT[b.aspect]} frame, so keep the key composition centred and away from the top/bottom or left/right edges.`
+      : "",
     mood ? `Evoke a feeling of ${mood}.` : "",
     headline
       ? `It accompanies an article titled “${headline}” — let the title inspire the mood while staying fully abstract.`
@@ -152,6 +164,9 @@ function buildRefinePrompt(b: GenerateBody): string {
     "Keep the existing composition and linework intact.",
     `Recolour it faithfully: the background must be exactly ${colorName(b.bg, BG_SWATCHES)} and the foreground marks exactly ${colorName(b.fg, FG_SWATCHES)}. Use these exact colours — do not substitute related tones. ${fieldDesc}.`,
     `Then apply this treatment as the defining effect: ${EFFECT_PROMPTS[b.effect]}.`,
+    b.aspect && FRAME_HINT[b.aspect]
+      ? `The square image will be centre-cropped to a ${FRAME_HINT[b.aspect]} frame, so keep the key composition centred and away from the top/bottom or left/right edges.`
+      : "",
     mood ? `Evoke a feeling of ${mood}.` : "",
     headline ? `It accompanies an article titled “${headline}” — let it inspire the mood while staying abstract.` : "",
     "No text, letters, words, or logos.",
